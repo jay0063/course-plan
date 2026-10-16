@@ -1,0 +1,27 @@
+# CoursePlan TLS 叠加编排 —— 在基础编排之上增加 Caddy 反向代理（自动 HTTPS）。
+#
+# 使用（强推荐，见 docs/DEPLOY.md）：
+#   cp deploy/Caddyfile.example deploy/Caddyfile
+#   # 在 .env 中填写 COURSEPLAN_DOMAIN（域名需已解析到本机，且放通 80/443）
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+#
+# Caddy 会自动向 Let's Encrypt 申请/续期证书，并将请求反代到 server:8080。
+services:
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      COURSEPLAN_DOMAIN: ${COURSEPLAN_DOMAIN:?COURSEPLAN_DOMAIN must be set (see .env.example)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,42 @@
+# 构建上下文裁剪（Dockerfile 位于 crates/server/，上下文为仓库根目录）
+
+# 构建产物 / 依赖缓存
+target/
+**/target/
+
+# 已打包产物（deb / AppImage / tar.gz / exe / dmg / app / zip）
+dist/
+packaging/
+
+# 版本控制与元数据
+.git/
+.gitignore
+.gitattributes
+
+# 进程/编排辅助目录
+.slim/
+
+# 文档与 CI（镜像构建不需要，减少上下文体积）
+docs/
+.github/
+
+# 本地环境与凭据（切勿进镜像）
+.env
+.env.*
+!.env.example
+
+# 编辑器 / 系统杂项
+**/*.swp
+**/*.swo
+**/.DS_Store
+**/*~
+
+# 打包产物通配兜底
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.exe
+*.msi
+*.zip
+*.tar.gz

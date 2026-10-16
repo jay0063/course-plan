@@ -24,13 +24,13 @@ pub fn load() -> Database {
     let path = data_file();
     match fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str::<Database>(&text).unwrap_or_else(|_| {
-            let db = seed();
+            let db = sample_data();
             let _ = save(&db);
             db
         }),
         Err(_) => {
             // 首次运行：写入一份示例数据，打开就能看到完整效果。
-            let db = seed();
+            let db = sample_data();
             let _ = save(&db);
             db
         }
@@ -48,7 +48,10 @@ pub fn save(db: &Database) -> Result<(), String> {
     Ok(())
 }
 
-fn seed() -> Database {
+/// 构造一份示例数据：一门学校课程 + 一门补习课程、一周课表、需要完成的提醒与打卡、两条备忘。
+///
+/// 供首次运行播种与无头渲染测试（`tests/render.rs`）注入确定性的数据使用。
+pub fn sample_data() -> Database {
     use crate::model::*;
 
     let math = Course::new("数学", CourseKind::School);

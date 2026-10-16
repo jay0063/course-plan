@@ -1,0 +1,9 @@
+# CoursePlan Caddy 配置示例 —— 复制为 deploy/Caddyfile 后使用：
+#   cp deploy/Caddyfile.example deploy/Caddyfile
+#
+# {$COURSEPLAN_DOMAIN} 由 docker-compose.tls.yml 从 .env 注入。
+# Caddy 会自动为该域名申请并续期 Let's Encrypt 证书（需 80/443 可达）。
+{$COURSEPLAN_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy server:8080
+}

@@ -17,8 +17,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
 [dev-dependencies]
-# 无头渲染测试保存 PNG（tests/render.rs）
+# 无头渲染/截图测试（tests/render.rs）：
+# - image: 保存 PNG
+# - gpui-kit/test-support: 提供 gpui::test 辅助 API，并让 gpui-pre 的
+#   render_to_image / WgpuHeadlessRenderer 在集成测试里可用（feature 会与主依赖合并）
 image = { version = "0.25", default-features = false, features = ["png"] }
+gpui-kit = { version = "0.7", features = ["test-support"] }
 
 # Keep framework code optimized while application code stays debuggable.
 [profile.dev.package]

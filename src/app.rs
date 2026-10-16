@@ -92,7 +92,14 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let mut db = store::load();
+        Self::with_database(store::load())
+    }
+
+    /// 使用注入的 [`Database`] 构造 App（不读写磁盘）。
+    ///
+    /// 逻辑与 [`App::new`] 完全一致，只是数据来源改为调用方提供；供集成测试 /
+    /// 无头渲染测试注入确定性数据（如 `store::sample_data()`）。
+    pub fn with_database(mut db: Database) -> Self {
         let page = if db.profile.auto_load_today {
             Page::Dashboard
         } else {
@@ -373,6 +380,12 @@ impl App {
                 });
             }
         }));
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -5,8 +5,33 @@ edition = "2024"
 description = "CoursePlan 同步服务端（axum + SQLite）"
 publish = false
 
-# 说明：本文件是 Phase 2.5 的占位骨架，由 Phase 1 泳道 B1 实现时全量重写。
-# 契约（docs/PLAN.md §5）：二进制名 course-plan-server；PORT=8080；
-# DATA_DIR=/data（DB=/data/courseplan.db）；JWT_SECRET 必填；GET /api/health。
+# 契约（docs/PLAN.md §5、docs/SYNC-PROTOCOL.md v1.2）：
+# 二进制名 course-plan-server；PORT=8080；DATA_DIR（DB=<DATA_DIR>/courseplan.db）；
+# JWT_SECRET 必填；RUST_LOG 默认 info；GET /api/health。
 
 [dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = "0.8"
+course-plan-sync-proto = { path = "../sync-proto" }
+jsonwebtoken = "9"
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }

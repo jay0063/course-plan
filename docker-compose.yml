@@ -1,0 +1,26 @@
+# CoursePlan 同步服务端 —— 基础 compose 编排（明文 HTTP）。
+#
+# ⚠️ 生产环境请叠加 TLS（见 docker-compose.tls.yml 与 docs/DEPLOY.md）：
+#    明文 HTTP 会泄露账号密码与 JWT。
+#
+# 使用：
+#   cp .env.example .env && ${EDITOR} .env   # 至少填入 JWT_SECRET
+#   docker compose up -d --build
+services:
+  server:
+    build:
+      context: .
+      dockerfile: crates/server/Dockerfile
+    image: courseplan-server:dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - courseplan-data:/data
+    environment:
+      # 必填：缺失时 compose 直接报错并提示查看 .env.example
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set (see .env.example)}
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+volumes:
+  courseplan-data:

@@ -1,0 +1,37 @@
+name: server
+
+on:
+  push:
+    paths:
+      - "crates/**"
+      - ".github/workflows/server.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - ".github/workflows/server.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test -p course-plan-server --locked
+      - name: Clippy
+        run: cargo clippy -p course-plan-server --all-targets --locked -- -D warnings
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f crates/server/Dockerfile -t courseplan-server:ci .
