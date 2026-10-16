@@ -23,14 +23,12 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .sum();
     let school_count = app
         .db
-        .courses
-        .iter()
+        .live_courses()
         .filter(|c| c.kind == crate::model::CourseKind::School)
         .count();
     let tutoring_count = app
         .db
-        .courses
-        .iter()
+        .live_courses()
         .filter(|c| c.kind == crate::model::CourseKind::Tutoring)
         .count();
     let now = model::now_minutes();
@@ -42,8 +40,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let stamp = model::now_string();
     let pending_reminders = app
         .db
-        .reminders
-        .iter()
+        .live_reminders()
         .filter(|r| !r.done && is_due(r.due_at.trim(), &stamp))
         .count();
 
@@ -62,7 +59,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .child(stat_tile(
             &theme,
             "课程总数",
-            format!("{}", app.db.courses.len()),
+            format!("{}", app.db.live_course_count()),
             Some(format!("校内 {} · 补习 {}", school_count, tutoring_count)),
             theme.info,
             Some(IconName::GraduationCap),
@@ -85,7 +82,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
             &theme,
             "待办提醒",
             format!("{}", pending_reminders),
-            Some(format!("备忘 {} 条", app.db.memos.len())),
+            Some(format!("备忘 {} 条", app.db.live_memo_count())),
             theme.warning,
             Some(IconName::Bell),
         ));
@@ -214,9 +211,13 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                 .id(eid("dash-checkin", &c.id))
                 .on_click(move |_e, _window, cx| {
                     view.update(cx, |this, cx| {
-                        if let Some(item) = this.db.checkins.iter_mut().find(|x| x.id == id) {
-                            let was = item.done_on(today);
-                            item.set_done(today, !was);
+                        let was = this
+                            .db
+                            .live_checkins()
+                            .find(|x| x.id == id)
+                            .map(|x| x.done_on(today));
+                        if let Some(was) = was {
+                            this.db.set_checkin_done(&id, today, !was);
                         }
                         this.commit(_window, cx);
                     });
@@ -254,8 +255,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let mut reminder_list = div().flex().flex_col().gap_2();
     let pending: Vec<_> = app
         .db
-        .reminders
-        .iter()
+        .live_reminders()
         .filter(|r| !r.done && is_due(r.due_at.trim(), &stamp))
         .take(5)
         .cloned()
@@ -287,9 +287,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                 .id(eid("dash-reminder", &r.id))
                 .on_click(move |_e, window, cx| {
                     view.update(cx, |this, cx| {
-                        if let Some(item) = this.db.reminders.iter_mut().find(|x| x.id == id) {
-                            item.done = true;
-                        }
+                        this.db.set_reminder_done(&id, true);
                         this.commit(window, cx);
                     });
                 })
@@ -540,12 +538,12 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         .child(kv_row(
                             &theme,
                             "课表条目",
-                            format!("{} 条", app.db.sessions.len()),
+                            format!("{} 条", app.db.live_session_count()),
                         ))
                         .child(kv_row(
                             &theme,
                             "备忘条数",
-                            format!("{} 条", app.db.memos.len()),
+                            format!("{} 条", app.db.live_memo_count()),
                         )),
                 )),
         )

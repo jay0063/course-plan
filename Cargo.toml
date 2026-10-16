@@ -11,6 +11,7 @@ resolver = "3"
 
 [dependencies]
 chrono = "0.4.45"
+course-plan-sync-proto = { path = "crates/sync-proto" }
 directories = "6.0.0"
 gpui-kit = "0.7"
 serde = { version = "1.0.229", features = ["derive"] }

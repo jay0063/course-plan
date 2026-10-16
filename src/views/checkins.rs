@@ -271,32 +271,23 @@ impl Render for CheckInEditor {
 }
 
 pub fn apply_draft(db: &mut Database, draft: &CheckInDraft) {
-    let id = if draft.id.is_empty() {
-        crate::model::new_id()
-    } else {
-        draft.id.clone()
-    };
-    match db.checkins.iter_mut().find(|c| c.id == id) {
-        Some(c) => {
-            c.title = draft.title.clone();
-            c.note = draft.note.clone();
-            c.repeat = draft.repeat;
-            c.weekdays = draft.weekdays.clone();
-            c.date = draft.date.clone();
-            c.archived = false;
+    let mut checkin = match db.checkins.iter().find(|c| c.id == draft.id) {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut fresh = CheckIn::new(draft.title.clone(), draft.repeat);
+            if !draft.id.is_empty() {
+                fresh.id = draft.id.clone();
+            }
+            fresh
         }
-        None => db.checkins.push(CheckIn {
-            id,
-            title: draft.title.clone(),
-            note: draft.note.clone(),
-            repeat: draft.repeat,
-            weekdays: draft.weekdays.clone(),
-            date: draft.date.clone(),
-            archived: false,
-            history: Default::default(),
-            created_at: model::now_string(),
-        }),
-    }
+    };
+    checkin.title = draft.title.clone();
+    checkin.note = draft.note.clone();
+    checkin.repeat = draft.repeat;
+    checkin.weekdays = draft.weekdays.clone();
+    checkin.date = draft.date.clone();
+    checkin.archived = false;
+    db.save_checkin(checkin);
 }
 
 /// 看板分栏。
@@ -323,8 +314,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
 
     let all: Vec<CheckIn> = app
         .db
-        .checkins
-        .iter()
+        .live_checkins()
         .filter(|c| !c.archived)
         .cloned()
         .collect();
@@ -445,11 +435,13 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                                     .child(check_circle(&theme, done, px(18.)))
                                     .on_click(move |_e, window, cx| {
                                         this_toggle.update(cx, |this, cx| {
-                                            if let Some(item) =
-                                                this.db.checkins.iter_mut().find(|x| x.id == id)
-                                            {
-                                                let was = item.done_on(today);
-                                                item.set_done(today, !was);
+                                            let was = this
+                                                .db
+                                                .live_checkins()
+                                                .find(|x| x.id == id)
+                                                .map(|x| x.done_on(today));
+                                            if let Some(was) = was {
+                                                this.db.set_checkin_done(&id, today, !was);
                                             }
                                             this.commit(window, cx);
                                         });
@@ -511,10 +503,10 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                                 "编辑",
                                 move |_e, window, cx| {
                                     this_edit.update(cx, |this, cx| {
-                                        if let Some(item) =
-                                            this.db.checkins.iter().find(|x| x.id == id_a)
-                                        {
-                                            let draft = CheckInDraft::from(item);
+                                        let found =
+                                            this.db.live_checkins().find(|x| x.id == id_a).cloned();
+                                        if let Some(item) = found {
+                                            let draft = CheckInDraft::from(&item);
                                             this.open_checkin_editor(draft, window, cx);
                                         }
                                     });
@@ -525,11 +517,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                                 "归档",
                                 move |_e, window, cx| {
                                     this_del.update(cx, |this, cx| {
-                                        if let Some(item) =
-                                            this.db.checkins.iter_mut().find(|x| x.id == id_b)
-                                        {
-                                            item.archived = true;
-                                        }
+                                        this.db.set_checkin_archived(&id_b, true);
                                         this.commit(window, cx);
                                     });
                                 },
@@ -550,8 +538,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     // 归档区
     let archived: Vec<CheckIn> = app
         .db
-        .checkins
-        .iter()
+        .live_checkins()
         .filter(|c| c.archived)
         .cloned()
         .collect();
@@ -581,10 +568,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         .id(eid("checkin-restore", &id))
                         .on_click(move |_e, window, cx| {
                             this.update(cx, |this, cx| {
-                                if let Some(item) = this.db.checkins.iter_mut().find(|x| x.id == id)
-                                {
-                                    item.archived = false;
-                                }
+                                this.db.set_checkin_archived(&id, false);
                                 this.commit(window, cx);
                             });
                         })

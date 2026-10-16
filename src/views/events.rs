@@ -217,32 +217,24 @@ impl Render for EventEditor {
 }
 
 pub fn apply_draft(db: &mut Database, draft: &EventDraft) {
-    let id = if draft.id.is_empty() {
-        crate::model::new_id()
-    } else {
-        draft.id.clone()
-    };
-    match db.events.iter_mut().find(|e| e.id == id) {
-        Some(item) => {
-            item.title = draft.title.clone();
-            item.date = draft.date.clone();
-            item.start = draft.start.clone();
-            item.end = draft.end.clone();
-            item.location = draft.location.clone();
-            item.note = draft.note.clone();
+    let mut event = match db.events.iter().find(|e| e.id == draft.id) {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut fresh = EventItem::new(draft.title.clone(), draft.date.clone());
+            if !draft.id.is_empty() {
+                fresh.id = draft.id.clone();
+            }
+            fresh
         }
-        None => db.events.push(EventItem {
-            id,
-            title: draft.title.clone(),
-            date: draft.date.clone(),
-            start: draft.start.clone(),
-            end: draft.end.clone(),
-            location: draft.location.clone(),
-            course_id: draft.course_id.clone(),
-            note: draft.note.clone(),
-            done: false,
-        }),
-    }
+    };
+    event.title = draft.title.clone();
+    event.date = draft.date.clone();
+    event.start = draft.start.clone();
+    event.end = draft.end.clone();
+    event.location = draft.location.clone();
+    event.note = draft.note.clone();
+    event.course_id = draft.course_id.clone();
+    db.save_event(event);
 }
 
 pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
@@ -411,9 +403,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                             "编辑",
                             move |_e, window, cx| {
                                 this_edit.update(cx, |this, cx| {
-                                    if let Some(found) = this.db.events.iter().find(|x| x.id == id)
-                                    {
-                                        let draft = EventDraft::from(found);
+                                    let found = this.db.live_events().find(|x| x.id == id).cloned();
+                                    if let Some(found) = found {
+                                        let draft = EventDraft::from(&found);
                                         this.open_event_editor(draft, window, cx);
                                     }
                                 });
@@ -540,7 +532,7 @@ fn confirm_delete_event(owner: Entity<App>, window: &mut Window, cx: &mut gpui::
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    this.db.events.retain(|x| x.id != id);
+                    this.db.delete_event(&id);
                     this.commit(window, cx);
                 });
                 true

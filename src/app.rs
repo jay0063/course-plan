@@ -75,6 +75,10 @@ impl Page {
 
 pub struct App {
     pub db: Database,
+    /// 设备本地运行态（提醒「已通知」记账等，不同步），启动时加载一次。
+    pub runtime: store::RuntimeState,
+    /// 启动时读取数据文件产生的告警（如损坏备份），渲染时提示一次。
+    pub startup_warning: Option<String>,
     pub page: Page,
     pub course_filter: CourseFilter,
     pub memo_filter: MemoFilter,
@@ -92,7 +96,11 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_database(store::load())
+        let (db, warning) = store::load();
+        let mut app = Self::with_database(db);
+        app.startup_warning = warning;
+        app.runtime = store::load_runtime_state();
+        app
     }
 
     /// 使用注入的 [`Database`] 构造 App（不读写磁盘）。
@@ -108,6 +116,8 @@ impl App {
         close_expired_once(&mut db);
         Self {
             db,
+            runtime: store::RuntimeState::default(),
+            startup_warning: None,
             page,
             course_filter: CourseFilter::All,
             memo_filter: MemoFilter::All,
@@ -129,8 +139,12 @@ impl App {
         if let Err(err) = store::save(&self.db) {
             window.push_notification(Notification::error(err).title("保存失败"), cx);
         }
+        self.note_local_change();
         cx.notify();
     }
+
+    /// 本地持久化后的钩子：供同步引擎做 3 秒防抖触发（D2 接线；此处为占位）。
+    pub fn note_local_change(&mut self) {}
 
     pub fn goto(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
@@ -178,8 +192,7 @@ impl App {
         let me = cx.entity();
         let courses: Vec<(String, String)> = self
             .db
-            .courses
-            .iter()
+            .live_courses()
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
         let editor = SessionEditor::new(
@@ -252,6 +265,9 @@ impl App {
                         return;
                     }
                     views::reminders::apply_draft(&mut this.db, &draft);
+                    if !draft.id.is_empty() {
+                        this.runtime.notified.remove(&draft.id);
+                    }
                     this.pending_reminder = None;
                     this.commit(window, cx);
                 });
@@ -346,10 +362,9 @@ impl App {
                     }
                     let due: Vec<(String, String, String)> = this
                         .db
-                        .reminders
-                        .iter()
+                        .live_reminders()
                         .filter(|r| !r.done)
-                        .filter(|r| r.notified_for != day)
+                        .filter(|r| this.runtime.notified.get(&r.id) != Some(&day))
                         .filter(|r| is_due(r.due_at.trim(), &stamp))
                         .map(|r| {
                             (
@@ -370,12 +385,11 @@ impl App {
                         let _ =
                             window.update(cx, |_, window, cx| window.push_notification(note, cx));
                     }
-                    for r in this.db.reminders.iter_mut() {
-                        if !r.done {
-                            r.notified_for = day.clone();
-                        }
+                    // 记账移入设备本地运行态（不同步；避免每台设备通知记账互相污染）。
+                    for r in this.db.live_reminders().filter(|r| !r.done) {
+                        this.runtime.notified.insert(r.id.clone(), day.clone());
                     }
-                    let _ = store::save(&this.db);
+                    let _ = store::save_runtime_state(&this.runtime);
                     cx.notify();
                 });
             }
@@ -412,29 +426,35 @@ fn parse_stamp(text: &str) -> Option<chrono::NaiveDateTime> {
 /// 今天到期且未完成的提醒数量，用于侧边栏徽标。
 pub fn pending_reminders(db: &Database) -> usize {
     let stamp = model::now_string();
-    db.reminders
-        .iter()
+    db.live_reminders()
         .filter(|r| !r.done && is_due(r.due_at.trim(), &stamp))
         .count()
 }
 
-/// 把已经过期的一次性提醒标记为完成。
+/// 把已经过期的一次性提醒标记为完成（走 Mutation API，为一次正常本地改动）。
 pub fn close_expired_once(db: &mut Database) {
     let today = model::today();
-    for r in db.reminders.iter_mut() {
-        if r.repeat == Repeat::Once
-            && !r.done
-            && chrono::NaiveDate::parse_from_str(r.due_at.get(..10).unwrap_or(""), "%Y-%m-%d")
+    let expired: Vec<String> = db
+        .live_reminders()
+        .filter(|r| r.repeat == Repeat::Once && !r.done)
+        .filter(|r| {
+            chrono::NaiveDate::parse_from_str(r.due_at.get(..10).unwrap_or(""), "%Y-%m-%d")
                 .is_ok_and(|d| d < today)
-        {
-            r.done = true;
-        }
+        })
+        .map(|r| r.id.clone())
+        .collect();
+    for id in expired {
+        db.set_reminder_done(&id, true);
     }
 }
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.start_timer(cx);
+
+        if let Some(warning) = self.startup_warning.take() {
+            window.push_notification(Notification::warning(warning).title("数据文件异常"), cx);
+        }
 
         let skin = Skin::new(cx.theme());
 

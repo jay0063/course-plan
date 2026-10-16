@@ -237,30 +237,22 @@ pub fn apply_draft(db: &mut Database, draft: &ReminderDraft) {
         draft.due_date.trim(),
         normalize_time(&draft.due_time)
     );
-    let id = if draft.id.is_empty() {
-        crate::model::new_id()
-    } else {
-        draft.id.clone()
-    };
-    match db.reminders.iter_mut().find(|r| r.id == id) {
-        Some(r) => {
-            r.title = draft.title.clone();
-            r.content = draft.content.clone();
-            r.due_at = due_at;
-            r.repeat = draft.repeat;
-            r.done = false;
-            r.notified_for.clear();
+    let mut reminder = match db.reminders.iter().find(|r| r.id == draft.id) {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut fresh = Reminder::new(draft.title.clone(), due_at.clone(), draft.repeat);
+            if !draft.id.is_empty() {
+                fresh.id = draft.id.clone();
+            }
+            fresh
         }
-        None => db.reminders.push(Reminder {
-            id,
-            title: draft.title.clone(),
-            content: draft.content.clone(),
-            due_at,
-            repeat: draft.repeat,
-            done: false,
-            notified_for: String::new(),
-        }),
-    }
+    };
+    reminder.title = draft.title.clone();
+    reminder.content = draft.content.clone();
+    reminder.due_at = due_at;
+    reminder.repeat = draft.repeat;
+    reminder.done = false;
+    db.save_reminder(reminder);
 }
 
 /// 把 "9:5" 之类的输入补全成 "09:05"。
@@ -292,7 +284,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         })
         .into_any_element();
 
-    let mut reminders: Vec<Reminder> = app.db.reminders.clone();
+    let mut reminders: Vec<Reminder> = app.db.live_reminders().cloned().collect();
     reminders.sort_by(|a, b| a.done.cmp(&b.done).then_with(|| a.due_at.cmp(&b.due_at)));
     reminders.retain(|r| show_done || !r.done);
 
@@ -356,11 +348,15 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         .child(check_circle(&theme, done, px(20.)))
                         .on_click(move |_e, window, cx| {
                             this_toggle.update(cx, |this, cx| {
-                                if let Some(item) =
-                                    this.db.reminders.iter_mut().find(|x| x.id == id)
-                                {
-                                    item.done = !item.done;
-                                    item.notified_for.clear();
+                                let done = this
+                                    .db
+                                    .live_reminders()
+                                    .find(|x| x.id == id)
+                                    .map(|x| x.done);
+                                if let Some(done) = done {
+                                    this.db.set_reminder_done(&id, !done);
+                                    // 记账为设备本地态：切换后清除当日「已通知」，允许重新提醒。
+                                    this.runtime.notified.remove(&id);
                                 }
                                 this.commit(window, cx);
                             });
@@ -416,10 +412,10 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                             "编辑",
                             move |_e, window, cx| {
                                 this_edit.update(cx, |this, cx| {
-                                    if let Some(item) =
-                                        this.db.reminders.iter().find(|x| x.id == id_a)
-                                    {
-                                        let draft = ReminderDraft::from(item);
+                                    let found =
+                                        this.db.live_reminders().find(|x| x.id == id_a).cloned();
+                                    if let Some(item) = found {
+                                        let draft = ReminderDraft::from(&item);
                                         this.open_reminder_editor(draft, window, cx);
                                     }
                                 });
@@ -457,7 +453,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         .text_color(theme.muted_foreground)
                         .child(format!(
                             "共 {} 条 · 今天 {} 条",
-                            app.db.reminders.len(),
+                            app.db.live_reminder_count(),
                             today_count
                         )),
                 )
@@ -519,7 +515,7 @@ fn confirm_delete_reminder(
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    this.db.reminders.retain(|x| x.id != id);
+                    this.db.delete_reminder(&id);
                     this.commit(window, cx);
                 });
                 true

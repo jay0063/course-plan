@@ -246,28 +246,28 @@ impl Render for SessionEditor {
 }
 
 pub fn apply_draft(db: &mut Database, draft: &SessionDraft) {
-    let id = if draft.id.is_empty() {
-        crate::model::new_id()
-    } else {
-        draft.id.clone()
-    };
-    match db.sessions.iter_mut().find(|s| s.id == id) {
-        Some(session) => {
-            session.course_id = draft.course_id.clone();
-            session.weekday = draft.weekday;
-            session.start = draft.start.clone();
-            session.end = draft.end.clone();
-            session.room = draft.room.clone();
+    let mut session = match db.sessions.iter().find(|s| s.id == draft.id) {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut fresh = Session::new(
+                draft.course_id.clone(),
+                draft.weekday,
+                draft.start.clone(),
+                draft.end.clone(),
+                draft.room.clone(),
+            );
+            if !draft.id.is_empty() {
+                fresh.id = draft.id.clone();
+            }
+            fresh
         }
-        None => db.sessions.push(Session {
-            id,
-            course_id: draft.course_id.clone(),
-            weekday: draft.weekday,
-            start: draft.start.clone(),
-            end: draft.end.clone(),
-            room: draft.room.clone(),
-        }),
-    }
+    };
+    session.course_id = draft.course_id.clone();
+    session.weekday = draft.weekday;
+    session.start = draft.start.clone();
+    session.end = draft.end.clone();
+    session.room = draft.room.clone();
+    db.save_session(session);
 }
 
 pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
@@ -337,7 +337,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
     }
     grid = grid.child(header);
 
-    if app.db.sessions.is_empty() {
+    if app.db.live_session_count() == 0 {
         let empty: AnyElement = div()
             .flex()
             .flex_col()
@@ -428,8 +428,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
                     .id(eid("session-card", &s.id))
                     .on_click(move |_e, window, cx| {
                         this_edit.update(cx, |this, cx| {
-                            if let Some(found) = this.db.sessions.iter().find(|x| x.id == id) {
-                                let draft = SessionDraft::from(found);
+                            let found = this.db.live_sessions().find(|x| x.id == id).cloned();
+                            if let Some(found) = found {
+                                let draft = SessionDraft::from(&found);
                                 this.open_session_editor(draft, window, cx);
                             }
                         });
@@ -504,7 +505,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
     // MARK: 右侧：本周概况 + 安排清单
 
     let mut by_day_list = div().flex().flex_col().gap_2();
-    let mut sorted: Vec<&Session> = app.db.sessions.iter().collect();
+    let mut sorted: Vec<&Session> = app.db.live_sessions().collect();
     sorted.sort_by_key(|s| (s.weekday, s.start_minutes()));
     for s in sorted.iter().take(12) {
         let course = app.db.course(&s.course_id);
@@ -568,8 +569,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
 
     let school_minutes: i64 = app
         .db
-        .sessions
-        .iter()
+        .live_sessions()
         .filter(|s| {
             app.db
                 .course(&s.course_id)
@@ -609,7 +609,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
             .child(summary_row(
                 &theme,
                 "安排条数",
-                format!("{} 条", app.db.sessions.len()),
+                format!("{} 条", app.db.live_session_count()),
                 theme.foreground,
             )),
     );
@@ -696,7 +696,7 @@ fn confirm_delete_session(owner: Entity<App>, window: &mut Window, cx: &mut gpui
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    this.db.sessions.retain(|x| x.id != id);
+                    this.db.delete_session(&id);
                     this.commit(window, cx);
                 });
                 true

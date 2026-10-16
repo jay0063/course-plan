@@ -10,7 +10,7 @@ use gpui::*;
 use std::rc::Rc;
 
 use crate::app::App;
-use crate::model::{self, Database, Memo};
+use crate::model::{Database, Memo};
 use crate::ui::widgets::{
     PALETTE, action_button, close_editor, eid, empty_state, palette_at, panel, section_title,
 };
@@ -202,24 +202,19 @@ impl Render for MemoEditor {
 }
 
 pub fn apply_draft(db: &mut Database, draft: &MemoDraft) {
-    let now = model::now_string();
-    match db.memos.iter_mut().find(|m| m.id == draft.id) {
-        Some(m) => {
-            m.title = draft.title.clone();
-            m.content = draft.content.clone();
-            m.color = draft.color;
-            m.updated_at = now;
+    let mut memo = match db.memos.iter().find(|m| m.id == draft.id) {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut fresh = Memo::new();
+            fresh.id = draft.id.clone();
+            fresh.pinned = draft.pinned;
+            fresh
         }
-        None => db.memos.push(Memo {
-            id: draft.id.clone(),
-            title: draft.title.clone(),
-            content: draft.content.clone(),
-            color: draft.color,
-            pinned: draft.pinned,
-            created_at: now.clone(),
-            updated_at: now,
-        }),
-    }
+    };
+    memo.title = draft.title.clone();
+    memo.content = draft.content.clone();
+    memo.color = draft.color;
+    db.save_memo(memo);
 }
 
 pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
@@ -241,7 +236,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         })
         .into_any_element();
 
-    let mut memos: Vec<Memo> = app.db.memos.clone();
+    let mut memos: Vec<Memo> = app.db.live_memos().cloned().collect();
     match filter {
         MemoFilter::All => {}
         MemoFilter::Pinned => memos.retain(|m| m.pinned),
@@ -363,10 +358,11 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                                     if pinned { "取消置顶" } else { "置顶" },
                                     move |_e, window, cx| {
                                         this_pin.update(cx, |this, cx| {
-                                            if let Some(item) =
-                                                this.db.memos.iter_mut().find(|x| x.id == id)
-                                            {
+                                            let found =
+                                                this.db.live_memos().find(|x| x.id == id).cloned();
+                                            if let Some(mut item) = found {
                                                 item.pinned = !item.pinned;
+                                                this.db.save_memo(item);
                                             }
                                             this.commit(window, cx);
                                         });
@@ -377,10 +373,13 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                                     "编辑",
                                     move |_e, window, cx| {
                                         this_edit.update(cx, |this, cx| {
-                                            if let Some(item) =
-                                                this.db.memos.iter().find(|x| x.id == id_a)
-                                            {
-                                                let draft = MemoDraft::from(item);
+                                            let found = this
+                                                .db
+                                                .live_memos()
+                                                .find(|x| x.id == id_a)
+                                                .cloned();
+                                            if let Some(item) = found {
+                                                let draft = MemoDraft::from(&item);
                                                 this.open_memo_editor(draft, window, cx);
                                             }
                                         });
@@ -460,7 +459,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                     div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(format!("共 {} 条", app.db.memos.len())),
+                        .child(format!("共 {} 条", app.db.live_memo_count())),
                 ),
         )
         .child(grid)
@@ -494,7 +493,7 @@ fn confirm_delete_memo(owner: Entity<App>, window: &mut Window, cx: &mut gpui::A
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    this.db.memos.retain(|x| x.id != id);
+                    this.db.delete_memo(&id);
                     this.commit(window, cx);
                 });
                 true

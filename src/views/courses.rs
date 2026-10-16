@@ -10,7 +10,7 @@ use gpui::*;
 use std::rc::Rc;
 
 use crate::app::App;
-use crate::model::{Course, CourseKind, Database, WEEKDAY_LABELS, new_id};
+use crate::model::{Course, CourseKind, Database, WEEKDAY_LABELS};
 use crate::ui::form::field_row;
 use crate::ui::select::{Select, SelectOption};
 use crate::ui::widgets::{
@@ -290,7 +290,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let filter = app.course_filter;
     let pending = app.pending_course.clone();
 
-    let mut courses: Vec<Course> = app.db.courses.clone();
+    let mut courses: Vec<Course> = app.db.live_courses().cloned().collect();
     match filter {
         CourseFilter::All => {}
         CourseFilter::School => courses.retain(|c| c.kind == CourseKind::School),
@@ -556,36 +556,26 @@ fn filter_chip(
         .child(label.to_string())
 }
 
-/// 把编辑器提交的数据写回数据库。
+/// 把编辑器提交的数据写回数据库（经 Mutation API，本地改动自动盖单调戳）。
 pub fn apply_draft(db: &mut Database, draft: &CourseDraft) {
-    match db.courses.iter_mut().find(|c| c.id == draft.id) {
-        Some(course) => {
-            course.name = draft.name.clone();
-            course.kind = draft.kind;
-            course.subject = draft.subject.clone();
-            course.teacher = draft.teacher.clone();
-            course.location = draft.location.clone();
-            course.note = draft.note.clone();
-            course.color = draft.color;
-        }
+    let mut course = match db.courses.iter().find(|c| c.id == draft.id) {
+        Some(existing) => existing.clone(),
         None => {
-            db.courses.push(Course {
-                id: if draft.id.is_empty() {
-                    new_id()
-                } else {
-                    draft.id.clone()
-                },
-                name: draft.name.clone(),
-                kind: draft.kind,
-                subject: draft.subject.clone(),
-                teacher: draft.teacher.clone(),
-                location: draft.location.clone(),
-                note: draft.note.clone(),
-                color: draft.color,
-                active: true,
-            });
+            let mut fresh = Course::new(draft.name.clone(), draft.kind);
+            if !draft.id.is_empty() {
+                fresh.id = draft.id.clone();
+            }
+            fresh
         }
-    }
+    };
+    course.name = draft.name.clone();
+    course.kind = draft.kind;
+    course.subject = draft.subject.clone();
+    course.teacher = draft.teacher.clone();
+    course.location = draft.location.clone();
+    course.note = draft.note.clone();
+    course.color = draft.color;
+    db.save_course(course);
 }
 
 fn confirm_delete_course(owner: Entity<App>, window: &mut Window, cx: &mut gpui::App, id: String) {
@@ -606,8 +596,7 @@ fn confirm_delete_course(owner: Entity<App>, window: &mut Window, cx: &mut gpui:
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    this.db.courses.retain(|c| c.id != id);
-                    this.db.sessions.retain(|s| s.course_id != id);
+                    this.db.delete_course(&id);
                     this.commit(window, cx);
                 });
                 true

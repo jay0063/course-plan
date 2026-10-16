@@ -11,7 +11,7 @@ use gpui::component::switch::Switch;
 use gpui::*;
 
 use crate::app::App;
-use crate::model::{Database, Profile};
+use crate::model::Profile;
 use crate::ui::form::field_row;
 use crate::ui::widgets::{card, eid, kv_row, panel, section_title};
 
@@ -68,14 +68,16 @@ impl ProfileInputs {
     }
 
     fn snapshot(&self, cx: &gpui::App) -> Profile {
+        let current = self.app.read(cx).db.profile.clone();
         Profile {
             student: self.name.read(cx).value().to_string(),
             grade: self.grade.read(cx).value().to_string(),
             school: self.school.read(cx).value().to_string(),
             term_start: self.term_start.read(cx).value().to_string(),
             term_end: self.term_end.read(cx).value().to_string(),
-            reminder_enabled: self.app.read(cx).db.profile.reminder_enabled,
-            auto_load_today: self.app.read(cx).db.profile.auto_load_today,
+            reminder_enabled: current.reminder_enabled,
+            auto_load_today: current.auto_load_today,
+            sync_ts: current.sync_ts,
         }
     }
 }
@@ -133,7 +135,7 @@ impl Render for ProfileInputs {
                                     (guard.snapshot(app), guard.app.clone())
                                 };
                                 owner.update(app, |root, cx| {
-                                    root.db.profile = values;
+                                    root.db.save_profile(values);
                                     root.commit(window, cx);
                                 });
                             }),
@@ -166,7 +168,9 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
         .label("提醒到期时弹出系统通知")
         .on_change(move |checked: &bool, window, cx| {
             this_rem.update(cx, |this, cx| {
-                this.db.profile.reminder_enabled = *checked;
+                let mut profile = this.db.profile.clone();
+                profile.reminder_enabled = *checked;
+                this.db.save_profile(profile);
                 this.commit(window, cx);
             });
         });
@@ -177,7 +181,9 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
         .label("启动时打开今日概览")
         .on_change(move |checked: &bool, window, cx| {
             this_auto.update(cx, |this, cx| {
-                this.db.profile.auto_load_today = *checked;
+                let mut profile = this.db.profile.clone();
+                profile.auto_load_today = *checked;
+                this.db.save_profile(profile);
                 this.commit(window, cx);
             });
         });
@@ -231,6 +237,16 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
             confirm_clear_all(this_clear.clone(), window, cx);
         });
 
+    let this_sample = this.clone();
+    let sample_button = Button::new("load-sample")
+        .secondary()
+        .compact()
+        .icon(Icon::new(IconName::Plus))
+        .label("载入示例数据")
+        .on_click(move |_e, window, cx| {
+            confirm_load_sample(this_sample.clone(), window, cx);
+        });
+
     let data_path = crate::store::data_file().display().to_string();
 
     div()
@@ -271,35 +287,42 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
                 .child(kv_row(
                     &theme,
                     "课程",
-                    format!("{} 门", app.db.courses.len()),
+                    format!("{} 门", app.db.live_course_count()),
                 ))
                 .child(kv_row(
                     &theme,
                     "课表条目",
-                    format!("{} 条", app.db.sessions.len()),
+                    format!("{} 条", app.db.live_session_count()),
                 ))
                 .child(kv_row(
                     &theme,
                     "日程安排",
-                    format!("{} 条", app.db.events.len()),
+                    format!("{} 条", app.db.live_event_count()),
                 ))
                 .child(kv_row(
                     &theme,
                     "提醒事项",
-                    format!("{} 条", app.db.reminders.len()),
+                    format!("{} 条", app.db.live_reminder_count()),
                 ))
                 .child(kv_row(
                     &theme,
                     "打卡任务",
-                    format!("{} 个", app.db.checkins.len()),
+                    format!("{} 个", app.db.live_checkin_count()),
                 ))
                 .child(kv_row(
                     &theme,
                     "备忘笔记",
-                    format!("{} 条", app.db.memos.len()),
+                    format!("{} 条", app.db.live_memo_count()),
                 ))
                 .child(div().h(px(4.)))
-                .child(clear_button),
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(sample_button)
+                        .child(clear_button),
+                ),
         ))
         .child(
             div()
@@ -320,13 +343,31 @@ fn confirm_clear_all(owner: Entity<App>, window: &mut Window, cx: &mut gpui::App
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_e, window, cx| {
                 owner.update(cx, |this, cx| {
-                    let profile = this.db.profile.clone();
-                    this.db = Database {
-                        profile,
-                        ..Default::default()
-                    };
+                    this.db.clear_all();
                     this.commit(window, cx);
                     window.push_notification(Notification::success("数据已清空").title("完成"), cx);
+                });
+                true
+            })
+    });
+}
+
+/// 载入示例数据确认对话框。
+fn confirm_load_sample(owner: Entity<App>, window: &mut Window, cx: &mut gpui::App) {
+    window.open_alert_dialog(cx, move |alert, _w, _cx| {
+        let owner = owner.clone();
+        alert
+            .title("载入示例数据")
+            .description("将清空现有数据并载入一套示例内容（课程、课表、打卡与备忘）。继续吗？")
+            .ok_text("载入示例")
+            .on_ok(move |_e, window, cx| {
+                owner.update(cx, |this, cx| {
+                    this.db.load_sample_data();
+                    this.commit(window, cx);
+                    window.push_notification(
+                        Notification::success("示例数据已载入").title("完成"),
+                        cx,
+                    );
                 });
                 true
             })
