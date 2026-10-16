@@ -977,6 +977,87 @@ impl Database {
         out
     }
 
+    /// 全部实体标识（**含墓碑**，profile 记作 `("main")`）。
+    ///
+    /// 供首登「本地覆盖云端」策略计算「仅存在于服务端」的 id 之差
+    /// （协议 §6-3c：`all_ids`（探针）减去 `all_entity_ids()`）。
+    pub fn all_entity_ids(&self) -> Vec<(EntityKind, String)> {
+        let mut out = Vec::new();
+        out.push((EntityKind::Profile, "main".to_string()));
+        out.extend(
+            self.courses
+                .iter()
+                .map(|e| (EntityKind::Course, e.id.clone())),
+        );
+        out.extend(
+            self.sessions
+                .iter()
+                .map(|e| (EntityKind::Session, e.id.clone())),
+        );
+        out.extend(
+            self.events
+                .iter()
+                .map(|e| (EntityKind::Event, e.id.clone())),
+        );
+        out.extend(
+            self.reminders
+                .iter()
+                .map(|e| (EntityKind::Reminder, e.id.clone())),
+        );
+        out.extend(
+            self.checkins
+                .iter()
+                .map(|e| (EntityKind::Checkin, e.id.clone())),
+        );
+        out.extend(self.memos.iter().map(|e| (EntityKind::Memo, e.id.clone())));
+        out
+    }
+
+    /// 首登「本地覆盖云端」重戳（协议 §6-3c，v1.2 R5）。
+    ///
+    /// 把**每一个**实体（含墓碑）的 `sync_ts` 抬到一个共享单调基址
+    /// `base_ms + 递增序号` 之上（同时抬高 `stamp_floor_ms`，使后续本地改动
+    /// 继续压过服务端已知戳）。`base_ms` 由 UI 取 `max(now_ms, server_time_ms + 1)`。
+    ///
+    /// 墓碑的 `deleted_at` 一并抬到新戳，保持「删除版本 = sync_ts」的不变量，
+    /// 从而「本地覆盖云端」也覆盖云端较新的存活版本。
+    ///
+    /// 注意：这不是用户改动，不写入 `round_min_mut_ts`。
+    pub fn bump_all_stamps(&mut self, base_ms: i64) {
+        fn bump(ts: &mut i64, deleted_at: Option<&mut Option<i64>>, base_ms: i64, index: &mut i64) {
+            let value = (*ts).max(base_ms.saturating_add(*index));
+            *ts = value;
+            if let Some(deleted) = deleted_at
+                && deleted.is_some()
+            {
+                *deleted = Some(value);
+            }
+            *index = index.saturating_add(1);
+        }
+
+        let mut index: i64 = 0;
+        bump(&mut self.profile.sync_ts, None, base_ms, &mut index);
+        for e in self.courses.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        for e in self.sessions.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        for e in self.events.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        for e in self.reminders.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        for e in self.checkins.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        for e in self.memos.iter_mut() {
+            bump(&mut e.sync_ts, Some(&mut e.deleted_at), base_ms, &mut index);
+        }
+        self.stamp_floor_ms = self.stamp_floor_ms.max(base_ms);
+    }
+
     /// 统一 apply（协议 §2.4 + §7）：pull 批次与 push `overridden` 同走此函数。
     ///
     /// **不重戳**：落地的远端实体 `sync_ts = change.updated_at`；唯一例外是 checkin

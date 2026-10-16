@@ -12,6 +12,7 @@ use gpui::*;
 
 use crate::app::App;
 use crate::model::Profile;
+use crate::sync::{Status, SyncCommand};
 use crate::ui::form::field_row;
 use crate::ui::widgets::{card, eid, kv_row, panel, section_title};
 
@@ -249,6 +250,136 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
 
     let data_path = crate::store::data_file().display().to_string();
 
+    // ── 同步卡片（普通功能实现，无样式打磨）──
+    let server_url = match &app.sync_server_url {
+        Some(entity) => entity.clone(),
+        None => {
+            let entity =
+                cx.new(|cx| InputState::new(window, cx).placeholder("http://127.0.0.1:8080"));
+            app.sync_server_url = Some(entity.clone());
+            entity
+        }
+    };
+    let username = match &app.sync_username {
+        Some(entity) => entity.clone(),
+        None => {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("用户名"));
+            app.sync_username = Some(entity.clone());
+            entity
+        }
+    };
+    let password = match &app.sync_password {
+        Some(entity) => entity.clone(),
+        None => {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("密码").masked(true));
+            app.sync_password = Some(entity.clone());
+            entity
+        }
+    };
+
+    let login = {
+        let this = this.clone();
+        let url = server_url.clone();
+        let user = username.clone();
+        let pass = password.clone();
+        Button::new("sync-login")
+            .primary()
+            .compact()
+            .label("登录")
+            .on_click(move |_e, _window, cx| {
+                let (url, user, pass) = (
+                    url.read(cx).value().to_string(),
+                    user.read(cx).value().to_string(),
+                    pass.read(cx).unmask_value().to_string(),
+                );
+                this.update(cx, |this, _cx| {
+                    this.sync.send(SyncCommand::Login {
+                        server_url: url,
+                        username: user,
+                        password: pass,
+                        register: false,
+                    });
+                });
+            })
+    };
+    let register = {
+        let this = this.clone();
+        let url = server_url.clone();
+        let user = username.clone();
+        let pass = password.clone();
+        Button::new("sync-register")
+            .secondary()
+            .compact()
+            .label("注册")
+            .on_click(move |_e, _window, cx| {
+                let (url, user, pass) = (
+                    url.read(cx).value().to_string(),
+                    user.read(cx).value().to_string(),
+                    pass.read(cx).unmask_value().to_string(),
+                );
+                this.update(cx, |this, _cx| {
+                    this.sync.send(SyncCommand::Login {
+                        server_url: url,
+                        username: user,
+                        password: pass,
+                        register: true,
+                    });
+                });
+            })
+    };
+    let logout = {
+        let this = this.clone();
+        Button::new("sync-logout")
+            .secondary()
+            .compact()
+            .label("登出")
+            .on_click(move |_e, _window, cx| {
+                this.update(cx, |this, cx| this.sync_logout(cx));
+            })
+    };
+    let sync_now = {
+        let this = this.clone();
+        Button::new("sync-now")
+            .secondary()
+            .compact()
+            .label("立即同步")
+            .on_click(move |_e, _window, cx| {
+                this.update(cx, |this, _cx| this.sync.send(SyncCommand::SyncNow));
+            })
+    };
+
+    let status_text = sync_status_text(&app.sync_status, app.sync_notice.as_deref());
+    let sync_card = card(
+        &theme,
+        "同步",
+        Some("多设备同步（可选，离线也能用）"),
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(field_row(
+                "服务器地址",
+                Input::new(&server_url).h(px(32.)).w_full(),
+            ))
+            .child(field_row(
+                "用户名",
+                Input::new(&username).h(px(32.)).w_full(),
+            ))
+            .child(field_row("密码", Input::new(&password).h(px(32.)).w_full()))
+            .child(kv_row(&theme, "状态", status_text))
+            .child(div().h(px(4.)))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(login)
+                    .child(register)
+                    .child(logout)
+                    .child(sync_now),
+            ),
+    );
+
     div()
         .flex()
         .flex_col()
@@ -275,6 +406,7 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
                 .child(auto_switch),
         ))
         .child(card(&theme, "外观主题", None::<SharedString>, theme_row))
+        .child(sync_card)
         .child(card(
             &theme,
             "数据存储",
@@ -372,4 +504,22 @@ fn confirm_load_sample(owner: Entity<App>, window: &mut Window, cx: &mut gpui::A
                 true
             })
     });
+}
+
+/// 同步状态 + 提示文案（设置页状态行）。
+fn sync_status_text(status: &Status, notice: Option<&str>) -> String {
+    let base = match status {
+        Status::Idle { last_sync_ms } => match last_sync_ms {
+            Some(ms) => chrono::DateTime::from_timestamp_millis(*ms)
+                .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                .map(|time| format!("已同步 · {time}"))
+                .unwrap_or_else(|| "已同步".to_string()),
+            None => "已同步".to_string(),
+        },
+        other => other.label_cn().to_string(),
+    };
+    match notice {
+        Some(note) if !note.is_empty() => format!("{base} · {note}"),
+        _ => base,
+    }
 }

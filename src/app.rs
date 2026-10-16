@@ -2,6 +2,7 @@ use crate::prelude::*;
 use gpui::assets::IconName;
 use gpui::component::Size;
 use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::input::InputState;
 use gpui::component::notification::Notification;
 use gpui::component::scroll::ScrollableElement;
 use gpui::component::{ThemeMode, WindowExt};
@@ -9,6 +10,9 @@ use gpui::*;
 
 use crate::model::{self, Database, Repeat};
 use crate::store;
+use crate::sync::{
+    FirstLoginPolicy, ProbeSummary, Status, SyncCommand, SyncCoreConfig, SyncEvent, SyncHandle,
+};
 use crate::ui::widgets::{Skin, eid};
 use crate::views;
 use crate::views::checkins::{CheckInDraft, CheckInEditor};
@@ -21,6 +25,12 @@ use crate::views::schedule::SessionEditor;
 use crate::views::settings::ProfileInputs;
 
 pub const APP_ID: &str = "com.courseplan.app";
+
+/// 首登对话框数据（收到探针结果、且双方皆非空时展示）。
+pub struct FirstLoginPrompt {
+    pub round_id: u64,
+    pub probe: ProbeSummary,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -91,7 +101,20 @@ pub struct App {
     pub pending_checkin: Option<Entity<CheckInEditor>>,
     pub pending_memo: Option<Entity<MemoEditor>>,
     pub profile_inputs: Option<Entity<ProfileInputs>>,
+    /// 同步 worker 句柄（命令发送 + 事件接收）。
+    pub sync: SyncHandle,
+    /// 最近一次同步状态（顶栏/设置页显示）。
+    pub sync_status: Status,
+    /// 设置页同步卡片的输入框（惰性创建）。
+    pub sync_server_url: Option<Entity<InputState>>,
+    pub sync_username: Option<Entity<InputState>>,
+    pub sync_password: Option<Entity<InputState>>,
+    /// 同步提示文案（登录结果 / 错误）。
+    pub sync_notice: Option<String>,
+    /// 首登对话框（双方皆非空时展示）。
+    pub first_login_prompt: Option<FirstLoginPrompt>,
     _timer: Option<Task<()>>,
+    _sync_consumer: Option<Task<()>>,
 }
 
 impl App {
@@ -100,6 +123,28 @@ impl App {
         let mut app = Self::with_database(db);
         app.startup_warning = warning;
         app.runtime = store::load_runtime_state();
+
+        // 读取已保存的同步凭据：有 token 则以后台 worker 恢复同步（§5.2 启动触发）。
+        let mut settings = store::load_sync();
+        // 设备标识在首次写入 sync.json 时生成；确保持久化，使 worker 与文件一致。
+        if settings.device_id.trim().is_empty() {
+            let _ = store::save_sync(&mut settings);
+        }
+        app.db.stamp_floor_ms = settings.push_watermark_ms;
+        let has_token = !settings.token.is_empty() && !settings.server_url.is_empty();
+        let config = SyncCoreConfig {
+            device_id: settings.device_id.clone(),
+            server_url: settings.server_url.clone(),
+            username: settings.username.clone(),
+            user_id: settings.user_id,
+            token: settings.token.clone(),
+            last_seq: settings.last_seq,
+        };
+        app.sync = SyncHandle::spawn(config);
+        app.sync_status = app.sync.status();
+        if has_token {
+            app.sync.send(SyncCommand::SyncNow);
+        }
         app
     }
 
@@ -130,7 +175,15 @@ impl App {
             pending_checkin: None,
             pending_memo: None,
             profile_inputs: None,
+            sync: SyncHandle::disabled(),
+            sync_status: Status::LoggedOut,
+            sync_server_url: None,
+            sync_username: None,
+            sync_password: None,
+            sync_notice: None,
+            first_login_prompt: None,
             _timer: None,
+            _sync_consumer: None,
         }
     }
 
@@ -143,8 +196,19 @@ impl App {
         cx.notify();
     }
 
-    /// 本地持久化后的钩子：供同步引擎做 3 秒防抖触发（D2 接线；此处为占位）。
-    pub fn note_local_change(&mut self) {}
+    /// 本地持久化后的钩子：投递 3 秒防抖的同步触发（§5.2）。
+    pub fn note_local_change(&mut self) {
+        self.sync.send(SyncCommand::LocalChanged);
+    }
+
+    /// 只持久化 data.json（远端 apply 路径；**不**触发 LocalChanged，避免回环）。
+    fn persist_data(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+        if let Err(err) = store::save(&self.db) {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(Notification::error(err).title("同步保存失败"), cx);
+            });
+        }
+    }
 
     pub fn goto(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
@@ -395,6 +459,340 @@ impl App {
             }
         }));
     }
+
+    // MARK: - 同步接线（UI 线程，单写者）
+
+    /// 启动同步事件消费者（与 `start_timer` 相同的 `cx.spawn` + `WeakEntity` 模式）。
+    fn start_sync_consumer(&mut self, cx: &mut Context<Self>) {
+        if self._sync_consumer.is_some() {
+            return;
+        }
+        let Some(events) = self.sync.take_events() else {
+            return;
+        };
+        let me = cx.entity();
+        self._sync_consumer = Some(cx.spawn(async move |_this, cx| {
+            while let Ok(event) = events.recv().await {
+                let Some(window) = cx.update(|cx| cx.active_window()) else {
+                    continue;
+                };
+                me.update(cx, |this, cx| this.on_sync_event(event, window, cx));
+            }
+        }));
+    }
+
+    /// 处理一条同步事件（**仅在 UI 线程**）：apply + 持久化 + 回执（§5.1）。
+    fn on_sync_event(
+        &mut self,
+        event: SyncEvent,
+        window: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SyncEvent::StatusChanged(status) => {
+                self.sync_status = status;
+            }
+            SyncEvent::RoundStarted { .. } => {
+                // 轮次起点：重置本轮最小本地改动戳记账（§5.3 R3）。
+                self.db.begin_round(0);
+            }
+            SyncEvent::NeedCandidates { round_id, full } => {
+                let since = if full { 0 } else { self.db.stamp_floor_ms };
+                let changes = self.db.all_changes(since);
+                self.sync
+                    .send(SyncCommand::Candidates { round_id, changes });
+            }
+            SyncEvent::ApplyBatch {
+                round_id,
+                changes,
+                replace_all,
+                ..
+            } => {
+                if replace_all {
+                    // 云端覆盖本地：丢弃本地未同步数据（不产生墓碑，§6-3b）。
+                    self.db = Database::default();
+                }
+                for change in &changes {
+                    self.db.apply_remote(change);
+                }
+                // 顺序：先 data.json（durable）→ 再回 Ack（§5.1）。
+                self.persist_data(window, cx);
+                self.sync.send(SyncCommand::AckRound { round_id });
+            }
+            SyncEvent::ProbeResult { round_id, probe } => {
+                self.handle_probe(round_id, probe);
+            }
+            SyncEvent::RoundComplete {
+                round_id,
+                last_seq,
+                watermark_base_ms,
+            } => {
+                self.persist_round_cursors(last_seq, watermark_base_ms, window, cx);
+                self.sync.send(SyncCommand::AckRound { round_id });
+            }
+            SyncEvent::AuthResult {
+                ok,
+                message,
+                server_url,
+                user_id,
+                username,
+                token,
+            } => {
+                self.handle_auth_result(
+                    ok, message, server_url, user_id, username, token, window, cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// 探针结果：服务端空 → 全量推；本地空 → 全量拉；双方非空 → 弹三选一对话框。
+    fn handle_probe(&mut self, round_id: u64, probe: ProbeSummary) {
+        let server_empty = probe.all_ids.is_empty();
+        let local_empty = self.db.all_entity_ids().len() <= 1;
+        if server_empty {
+            self.sync.send(SyncCommand::FirstLoginPolicy {
+                round_id,
+                policy: FirstLoginPolicy::Merge,
+            });
+        } else if local_empty {
+            self.sync.send(SyncCommand::FirstLoginPolicy {
+                round_id,
+                policy: FirstLoginPolicy::CloudWins,
+            });
+        } else {
+            self.first_login_prompt = Some(FirstLoginPrompt { round_id, probe });
+        }
+    }
+
+    /// 登录成功：按 §3 处理账号切换（归档 + 清空 + 重置游标）并持久化凭据。
+    #[allow(clippy::too_many_arguments)] // 事件字段直传，避免额外结构体
+    fn handle_auth_result(
+        &mut self,
+        ok: bool,
+        message: String,
+        server_url: Option<String>,
+        user_id: Option<i64>,
+        username: Option<String>,
+        token: Option<String>,
+        window: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        if !ok {
+            self.sync_notice = Some(message.clone());
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(Notification::error(message).title("同步"), cx);
+            });
+            return;
+        }
+
+        let server_url = server_url.unwrap_or_default();
+        let mut settings = store::load_sync();
+        let switched = settings.server_url != server_url
+            || settings.user_id != user_id
+            || settings.user_id.is_none();
+        let had_previous = settings.user_id.is_some() || !settings.server_url.is_empty();
+        if switched && had_previous {
+            // 账号切换（§3）：归档当前 data.json，本地 DB 清空为新账号空白空间。
+            self.archive_current_data(settings.user_id);
+            self.db = Database::default();
+            let _ = store::save(&self.db);
+        }
+
+        settings.server_url = server_url;
+        settings.user_id = user_id;
+        settings.username = username.clone().unwrap_or_default();
+        settings.token = token.unwrap_or_default();
+        // 登录/切换 → 游标与水位重置 → 全量重拉（§3）。
+        settings.last_seq = 0;
+        settings.push_watermark_ms = 0;
+        if let Err(err) = store::save_sync(&mut settings) {
+            self.sync_notice = Some(err);
+        }
+        self.db.stamp_floor_ms = 0;
+
+        let name = username.unwrap_or_default();
+        self.sync_notice = Some(format!("已登录：{name}"));
+        let _ = window.update(cx, |_, window, cx| {
+            window.push_notification(
+                Notification::success(format!("已登录 {name}")).title("同步"),
+                cx,
+            );
+        });
+    }
+
+    /// 归档当前 data.json 为 `data-<old_user_id>.json`（§3 账号切换）。
+    fn archive_current_data(&self, old_user_id: Option<i64>) {
+        let path = store::data_file();
+        if !path.exists() {
+            return;
+        }
+        let tag = old_user_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let dest = path.with_file_name(format!("data-{tag}.json"));
+        let _ = std::fs::rename(&path, &dest);
+    }
+
+    /// 整轮完成：写 data.json（批内已写）→ 写 sync.json（游标 + 水位）→ 由调用方 ack。
+    fn persist_round_cursors(
+        &mut self,
+        last_seq: u64,
+        watermark_base_ms: i64,
+        window: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        let min_mut = self.db.round_min_mutation_ts();
+        let watermark = match min_mut {
+            Some(min) => watermark_base_ms.min(min),
+            None => watermark_base_ms,
+        };
+        let mut settings = store::load_sync();
+        settings.last_seq = last_seq;
+        settings.push_watermark_ms = watermark;
+        self.db.stamp_floor_ms = watermark;
+        if let Err(err) = store::save_sync(&mut settings) {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(Notification::error(err).title("同步保存失败"), cx);
+            });
+        }
+    }
+
+    /// 首登对话框三选一执行（§6-3）。
+    pub fn apply_first_login_policy(
+        &mut self,
+        policy_first_login: FirstLoginPolicyKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self.first_login_prompt.take() else {
+            return;
+        };
+        let round_id = prompt.round_id;
+        let policy = match policy_first_login {
+            FirstLoginPolicyKind::Merge => FirstLoginPolicy::Merge,
+            FirstLoginPolicyKind::CloudWins => FirstLoginPolicy::CloudWins,
+            FirstLoginPolicyKind::LocalWins => {
+                // 本地覆盖云端：先重戳（压过服务端已知戳），stamp floor 一并抬高（§6-3c）。
+                let base = model::now_ms().max(prompt.probe.server_time_ms.saturating_add(1));
+                self.db.bump_all_stamps(base);
+                self.db.stamp_floor_ms = base;
+                let local_ids = self.db.all_entity_ids();
+                FirstLoginPolicy::LocalWins { local_ids }
+            }
+        };
+        if let Err(err) = store::save(&self.db) {
+            window.push_notification(Notification::error(err).title("保存失败"), cx);
+        }
+        self.sync
+            .send(SyncCommand::FirstLoginPolicy { round_id, policy });
+        cx.notify();
+    }
+
+    /// 登出：仅停止同步、保留本地数据（§3）。
+    pub fn sync_logout(&mut self, cx: &mut Context<Self>) {
+        self.sync.send(SyncCommand::Logout);
+        let mut settings = store::load_sync();
+        settings.token.clear();
+        let _ = store::save_sync(&mut settings);
+        self.sync_notice = Some("已登出（本地数据保留）".to_string());
+        cx.notify();
+    }
+
+    /// 首登对话框遮罩（普通功能实现，样式留待设计阶段）。
+    fn render_first_login_overlay(
+        &self,
+        skin: &Skin,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let prompt = self.first_login_prompt.as_ref()?;
+        let this = cx.entity();
+        let counts: Vec<String> = if prompt.probe.counts_by_kind.is_empty() {
+            vec!["（云端暂无实体）".to_string()]
+        } else {
+            prompt
+                .probe
+                .counts_by_kind
+                .iter()
+                .map(|(kind, count)| format!("{} × {}", kind.label_cn(), count))
+                .collect()
+        };
+        let mut buttons = div().flex().gap_2().flex_wrap();
+        for (label, kind, primary) in [
+            ("合并（推荐）", FirstLoginPolicyKind::Merge, true),
+            ("云端覆盖本地", FirstLoginPolicyKind::CloudWins, false),
+            ("本地覆盖云端", FirstLoginPolicyKind::LocalWins, false),
+        ] {
+            let this = this.clone();
+            let mut button = Button::new(eid("first-login", label))
+                .compact()
+                .label(label);
+            button = if primary {
+                button.primary()
+            } else {
+                button.secondary()
+            };
+            buttons = buttons.child(button.on_click(move |_e, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.apply_first_login_policy(kind, window, cx)
+                });
+            }));
+        }
+        let dialog = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_6()
+            .w(px(420.))
+            .rounded_lg()
+            .bg(skin.panel)
+            .border_1()
+            .border_color(skin.border)
+            .child(
+                div()
+                    .text_lg()
+                    .font_semibold()
+                    .text_color(skin.fg)
+                    .child("首次登录：云端与本地都有数据"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_sm()
+                    .text_color(skin.muted)
+                    .child("云端内容：")
+                    .children(counts.into_iter().map(|line| div().child(line))),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(skin.muted)
+                    .child("「本地覆盖云端」会为云端独有数据推送删除（墓碑）。"),
+            )
+            .child(buttons);
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(Hsla { a: 0.5, ..skin.fg })
+                .child(dialog)
+                .into_any_element(),
+        )
+    }
+}
+
+/// 首登三选一（UI 侧枚举，避免与核心类型耦合过紧）。
+#[derive(Clone, Copy)]
+pub enum FirstLoginPolicyKind {
+    Merge,
+    CloudWins,
+    LocalWins,
 }
 
 impl Default for App {
@@ -451,6 +849,7 @@ pub fn close_expired_once(db: &mut Database) {
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.start_timer(cx);
+        self.start_sync_consumer(cx);
 
         if let Some(warning) = self.startup_warning.take() {
             window.push_notification(Notification::warning(warning).title("数据文件异常"), cx);
@@ -473,6 +872,7 @@ impl Render for App {
 
         let sidebar = render_sidebar(self, &skin, cx);
         let topbar = render_topbar(self, &skin, cx);
+        let overlay = self.render_first_login_overlay(&skin, cx);
 
         div()
             .flex()
@@ -491,6 +891,7 @@ impl Render for App {
                     .child(topbar)
                     .child(div().flex_1().min_h_0().overflow_hidden().child(content)),
             )
+            .when_some(overlay, |d, overlay| d.child(overlay))
     }
 }
 
@@ -697,6 +1098,12 @@ fn render_topbar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 .items_center()
                 .gap_2()
                 .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(sync_status_line(&app.sync_status)),
+                )
+                .child(
                     Button::new("toggle-theme")
                         .ghost()
                         .compact()
@@ -727,4 +1134,17 @@ fn render_topbar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 ),
         )
         .into_any_element()
+}
+
+/// 顶栏一行的同步状态文案（含上次同步时间）。
+fn sync_status_line(status: &Status) -> String {
+    match status {
+        Status::Idle {
+            last_sync_ms: Some(ms),
+        } => chrono::DateTime::from_timestamp_millis(*ms)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+            .map(|time| format!("已同步 · {time}"))
+            .unwrap_or_else(|| "已同步".to_string()),
+        other => other.label_cn().to_string(),
+    }
 }

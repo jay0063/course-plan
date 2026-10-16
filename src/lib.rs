@@ -5,6 +5,7 @@ pub mod assets;
 pub mod model;
 pub mod prelude;
 pub mod store;
+pub mod sync;
 pub mod ui;
 pub mod views;
 

@@ -14,10 +14,17 @@ chrono = "0.4.45"
 course-plan-sync-proto = { path = "crates/sync-proto" }
 directories = "6.0.0"
 gpui-kit = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 
 [dev-dependencies]
+# 收敛测试（tests/convergence.rs）：进程内真实服务端 + 多客户端往返。
+course-plan-server = { path = "crates/server" }
+rand = "0.9"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # 无头渲染/截图测试（tests/render.rs）：
 # - image: 保存 PNG
 # - gpui-kit/test-support: 提供 gpui::test 辅助 API，并让 gpui-pre 的

@@ -1257,12 +1257,17 @@ name = "course-plan"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "course-plan-server",
  "course-plan-sync-proto",
  "directories",
  "gpui-kit",
  "image",
+ "rand 0.9.5",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
