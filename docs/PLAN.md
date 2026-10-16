@@ -137,7 +137,7 @@ course-plan/
 
 ## 5. 冻结接口契约（泳道间）
 
-- **workspace**: 根 `[workspace] members = [".", "crates/sync-proto", "crates/server"]`
+- **workspace**: 根 `[workspace] members = ["crates/sync-proto", "crates/server"]`（根包自动为成员），`resolver = "3"`
 - **crate 名**: `course-plan`(客户端) / `course-plan-sync-proto` / `course-plan-server`
 - **服务端二进制名**: `course-plan-server`；端口 `PORT=8080`；数据目录 `DATA_DIR=/data`（DB `/data/courseplan.db`）；`JWT_SECRET` 必填；`RUST_LOG` 默认 `info`
 - **健康检查**: `GET /api/health` → `{"status":"ok","version":"…"}`（无需鉴权）

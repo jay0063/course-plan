@@ -1224,6 +1224,19 @@ dependencies = [
  "chrono",
  "directories",
  "gpui-kit",
+ "image",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "course-plan-server"
+version = "0.1.0"
+
+[[package]]
+name = "course-plan-sync-proto"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]

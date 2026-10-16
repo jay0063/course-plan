@@ -1,0 +1,12 @@
+[package]
+name = "course-plan-server"
+version = "0.1.0"
+edition = "2024"
+description = "CoursePlan 同步服务端（axum + SQLite）"
+publish = false
+
+# 说明：本文件是 Phase 2.5 的占位骨架，由 Phase 1 泳道 B1 实现时全量重写。
+# 契约（docs/PLAN.md §5）：二进制名 course-plan-server；PORT=8080；
+# DATA_DIR=/data（DB=/data/courseplan.db）；JWT_SECRET 必填；GET /api/health。
+
+[dependencies]
