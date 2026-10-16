@@ -113,6 +113,8 @@ pub struct App {
     pub sync_notice: Option<String>,
     /// 首登对话框（双方皆非空时展示）。
     pub first_login_prompt: Option<FirstLoginPrompt>,
+    /// 最近一次登录是否发生了账号切换（同账号重登时不弹首登三选一，§6）。
+    pub pending_login_switched: bool,
     _timer: Option<Task<()>>,
     _sync_consumer: Option<Task<()>>,
 }
@@ -182,17 +184,23 @@ impl App {
             sync_password: None,
             sync_notice: None,
             first_login_prompt: None,
+            pending_login_switched: false,
             _timer: None,
             _sync_consumer: None,
         }
     }
 
     /// 写入数据并刷新界面。
+    ///
+    /// 仅在 data.json 落盘成功后，才向同步引擎公告本地改动：写盘失败的编辑**不得**
+    /// 进入同步候选（否则会推送一份本地并未持久化的状态）。
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(err) = store::save(&self.db) {
-            window.push_notification(Notification::error(err).title("保存失败"), cx);
+        match store::save(&self.db) {
+            Ok(()) => self.note_local_change(),
+            Err(err) => {
+                window.push_notification(Notification::error(err).title("保存失败"), cx);
+            }
         }
-        self.note_local_change();
         cx.notify();
     }
 
@@ -202,12 +210,8 @@ impl App {
     }
 
     /// 只持久化 data.json（远端 apply 路径；**不**触发 LocalChanged，避免回环）。
-    fn persist_data(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
-        if let Err(err) = store::save(&self.db) {
-            let _ = window.update(cx, |_, window, cx| {
-                window.push_notification(Notification::error(err).title("同步保存失败"), cx);
-            });
-        }
+    fn persist_data(&mut self) -> Result<(), String> {
+        store::save(&self.db)
     }
 
     pub fn goto(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -490,6 +494,10 @@ impl App {
     ) {
         match event {
             SyncEvent::StatusChanged(status) => {
+                // 一轮成功回到 Idle：清掉旧提示，避免陈旧告警长期滞留。
+                if matches!(status, Status::Idle { .. }) {
+                    self.sync_notice = None;
+                }
                 self.sync_status = status;
             }
             SyncEvent::RoundStarted { .. } => {
@@ -515,9 +523,28 @@ impl App {
                 for change in &changes {
                     self.db.apply_remote(change);
                 }
-                // 顺序：先 data.json（durable）→ 再回 Ack（§5.1）。
-                self.persist_data(window, cx);
-                self.sync.send(SyncCommand::AckRound { round_id });
+                // 顺序：先 data.json（durable）→ 再回 Ack（§5.1）。写盘失败必须回
+                // `ok:false`，核心据此不推进游标并向后退避重放。
+                let ok = match self.persist_data() {
+                    Ok(()) => true,
+                    Err(err) => {
+                        self.sync_notice = Some(err.clone());
+                        let _ = window.update(cx, |_, window, cx| {
+                            window.push_notification(
+                                Notification::error(err).title("同步保存失败"),
+                                cx,
+                            );
+                        });
+                        false
+                    }
+                };
+                self.sync.send(SyncCommand::AckRound { round_id, ok });
+            }
+            SyncEvent::Warning(message) => {
+                self.sync_notice = Some(message.clone());
+                let _ = window.update(cx, |_, window, cx| {
+                    window.push_notification(Notification::warning(message).title("同步提示"), cx);
+                });
             }
             SyncEvent::ProbeResult { round_id, probe } => {
                 self.handle_probe(round_id, probe);
@@ -527,8 +554,22 @@ impl App {
                 last_seq,
                 watermark_base_ms,
             } => {
-                self.persist_round_cursors(last_seq, watermark_base_ms, window, cx);
-                self.sync.send(SyncCommand::AckRound { round_id });
+                // 先写 sync.json（游标 + 水位）；失败则回 `ok:false`，保留内存游标以便
+                // 幂等重放，绝不先推进游标。
+                let ok = match self.persist_round_cursors(last_seq, watermark_base_ms) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        self.sync_notice = Some(err.clone());
+                        let _ = window.update(cx, |_, window, cx| {
+                            window.push_notification(
+                                Notification::error(err).title("同步保存失败"),
+                                cx,
+                            );
+                        });
+                        false
+                    }
+                };
+                self.sync.send(SyncCommand::AckRound { round_id, ok });
             }
             SyncEvent::AuthResult {
                 ok,
@@ -547,21 +588,30 @@ impl App {
     }
 
     /// 探针结果：服务端空 → 全量推；本地空 → 全量拉；双方非空 → 弹三选一对话框。
+    ///
+    /// 同账号重登（`pending_login_switched == false`）不弹对话框：游标已被重置为 0，
+    /// 全量拉取 + 推送是幂等的，直接合并即可（§6）。
     fn handle_probe(&mut self, round_id: u64, probe: ProbeSummary) {
         let server_empty = probe.all_ids.is_empty();
-        let local_empty = self.db.all_entity_ids().len() <= 1;
-        if server_empty {
-            self.sync.send(SyncCommand::FirstLoginPolicy {
-                round_id,
-                policy: FirstLoginPolicy::Merge,
-            });
-        } else if local_empty {
-            self.sync.send(SyncCommand::FirstLoginPolicy {
-                round_id,
-                policy: FirstLoginPolicy::CloudWins,
-            });
+        // 仅 profile（账号本身的空档案，`sync_ts == 0`）不算「有数据」。
+        let local_empty = self.db.all_entity_ids().len() <= 1 && self.db.profile.sync_ts == 0;
+        let policy = if server_empty || !self.pending_login_switched || local_empty {
+            Some(if server_empty || !self.pending_login_switched {
+                FirstLoginPolicy::Merge
+            } else {
+                FirstLoginPolicy::CloudWins
+            })
         } else {
-            self.first_login_prompt = Some(FirstLoginPrompt { round_id, probe });
+            None
+        };
+        match policy {
+            Some(policy) => {
+                self.sync
+                    .send(SyncCommand::FirstLoginPolicy { round_id, policy });
+            }
+            None => {
+                self.first_login_prompt = Some(FirstLoginPrompt { round_id, probe });
+            }
         }
     }
 
@@ -591,10 +641,26 @@ impl App {
         let switched = settings.server_url != server_url
             || settings.user_id != user_id
             || settings.user_id.is_none();
+        // 记录给探针阶段：同账号重登不弹首登三选一（§6）。
+        self.pending_login_switched = switched;
         let had_previous = settings.user_id.is_some() || !settings.server_url.is_empty();
         if switched && had_previous {
             // 账号切换（§3）：归档当前 data.json，本地 DB 清空为新账号空白空间。
-            self.archive_current_data(settings.user_id);
+            // 归档失败 → 完全中止切换（保留当前 db / 凭据，用户可重试）。
+            if let Err(err) = self.archive_current_data(settings.user_id) {
+                self.pending_login_switched = false;
+                self.sync_notice = Some(format!("账号切换已中止：{err}"));
+                let _ = window.update(cx, |_, window, cx| {
+                    window.push_notification(
+                        Notification::error(format!("账号切换已中止（本地数据未改动）：{err}"))
+                            .title("同步"),
+                        cx,
+                    );
+                });
+                // 核心已切到新账号 token，登出以避免新账号数据写入旧库。
+                self.sync.send(SyncCommand::Logout);
+                return;
+            }
             self.db = Database::default();
             let _ = store::save(&self.db);
         }
@@ -622,26 +688,39 @@ impl App {
     }
 
     /// 归档当前 data.json 为 `data-<old_user_id>.json`（§3 账号切换）。
-    fn archive_current_data(&self, old_user_id: Option<i64>) {
+    ///
+    /// 返回 `Err` 时调用方必须**中止**账号切换（本地数据保持不变）。目标名不覆盖已存在
+    /// 的归档：冲突时追加时间戳 + 序号。
+    fn archive_current_data(&self, old_user_id: Option<i64>) -> Result<(), String> {
         let path = store::data_file();
         if !path.exists() {
-            return;
+            return Ok(());
         }
         let tag = old_user_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        let dest = path.with_file_name(format!("data-{tag}.json"));
-        let _ = std::fs::rename(&path, &dest);
+        let mut dest = path.with_file_name(format!("data-{tag}.json"));
+        if dest.exists() {
+            let stamp = model::now_ms();
+            dest = path.with_file_name(format!("data-{tag}-{stamp}.json"));
+            let mut counter = 1u32;
+            while dest.exists() {
+                dest = path.with_file_name(format!("data-{tag}-{stamp}-{counter}.json"));
+                counter += 1;
+            }
+        }
+        std::fs::rename(&path, &dest)
+            .map_err(|err| format!("归档 {} → {} 失败：{err}", path.display(), dest.display()))
     }
 
     /// 整轮完成：写 data.json（批内已写）→ 写 sync.json（游标 + 水位）→ 由调用方 ack。
+    ///
+    /// 返回 `Err` 时调用方应回执 `AckRound { ok: false }`，核心据此**不推进**游标/水位。
     fn persist_round_cursors(
         &mut self,
         last_seq: u64,
         watermark_base_ms: i64,
-        window: gpui::AnyWindowHandle,
-        cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let min_mut = self.db.round_min_mutation_ts();
         let watermark = match min_mut {
             Some(min) => watermark_base_ms.min(min),
@@ -650,12 +729,9 @@ impl App {
         let mut settings = store::load_sync();
         settings.last_seq = last_seq;
         settings.push_watermark_ms = watermark;
+        // 水位 ≤ 本轮任一本地改动戳，故内存中的 stamp_floor 抬升不会漏掉本轮改动。
         self.db.stamp_floor_ms = watermark;
-        if let Err(err) = store::save_sync(&mut settings) {
-            let _ = window.update(cx, |_, window, cx| {
-                window.push_notification(Notification::error(err).title("同步保存失败"), cx);
-            });
-        }
+        store::save_sync(&mut settings)
     }
 
     /// 首登对话框三选一执行（§6-3）。

@@ -128,6 +128,7 @@ apply_remote(local_latest_version, incoming_change):
 - `Database` **只在 UI 线程读写**（与 GPUI `App` 实体同线程）。
 - 同步 worker（专用 OS 线程 + 自带 tokio current-thread runtime + reqwest(rustls)）只做：**网络请求 + 轮次状态机**，不触碰 DB、不写文件。
 - 服务端变更经 smol channel 送 UI 事件队列；UI 线程执行统一 apply（§2.4）并**持久化 `data.json`（commit）成功之后**才回 `Ack`；worker 收到 Ack 后才推进并持久化 `sync.json` 游标。`sync.json` 由 UI 线程写（单写者延伸）。
+- **Ack 失败语义（Gate 2 修复注记）**：`AckRound` 携带 `ok: bool`；只有当 `data.json` 与 `sync.json` 两处持久化**均成功**才回 `ok=true`；任一失败回 `ok=false` → 本轮视为失败：游标/水位不动、退避重试（幂等重放，允许内存态与磁盘态短暂不一致，重放后收敛）。同理，本地 commit 持久化失败时**不得**向引擎申报 LocalChanged（避免「未落盘的编辑被推送并越过游标」）。
 - 崩溃语义：Ack 前崩溃 → 游标保留上轮值 → 幂等重放；不可能出现「游标已越过、变更已丢」。
 
 ### 5.2 触发与单飞
@@ -175,6 +176,11 @@ loop: GET /pull?since=last_seq … 直到 !has_more，每批统一 apply（同�
      → 效果：同 id 实体本地版本获胜，服务端独有实体被删。对话框文案明确说明「将删除云端独有数据」。中途失败幂等可重试（重戳与重推均安全）。
 
 任何选择完成后进入常规循环（§5）。
+
+**实现注记（Gate 2 修复）**：
+- Merge 必须是**先 pull（到 `has_more=false`）再 push**：push 在前会让「本地获胜」的 checkin 覆盖服务端行，永久擦除仅存于服务端的 history 键（来源设备离线时无法再合并回来）。
+- LocalWins 的删除墓碑与全量重戳使用同一 bumped 基准时间；若 LocalWins 轮次中途失败，重试按常规轮次规则（水位/候选）进行——对服务端独有 id 的墓碑不重放（已知、接受）。
+- 同一账号重新登录（非切换）不弹「双方皆非空」对话框，自动按 Merge 全量重拉重推（幂等）。
 
 ## 7. checkin.history 合并（统一 apply 内，覆盖 pull 与 overridden 两路径）
 

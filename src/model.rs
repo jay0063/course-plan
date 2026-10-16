@@ -1145,9 +1145,14 @@ impl Database {
 
         if out.history != merged {
             out.history = merged;
-            out.sync_ts = local_ts.max(ts).saturating_add(1);
+            let bump = local_ts.max(ts).saturating_add(1);
+            out.sync_ts = bump;
             out.deleted_at = None;
             self.checkins[index] = out;
+            // 把合并 bump 折进本轮最小改动戳记账：本轮水位
+            // `min(C0, server_time, round_min_mut_ts)` 因此 ≤ bump，
+            // 合并后的并集不会被水位挡在下一轮之外（§5.3 R3 / §7）。
+            self.round_min_mut_ts = Some(self.round_min_mut_ts.map_or(bump, |m| m.min(bump)));
             ApplyOutcome::MergedBumped
         } else {
             out.sync_ts = if remote_wins { ts } else { local_ts };
@@ -1699,6 +1704,51 @@ mod tests {
         assert_eq!(merged.history.get("2026-10-02"), Some(&false));
         // bump 严格高于双方，保持候选。
         assert_eq!(merged.sync_ts, 101);
+    }
+
+    #[test]
+    fn checkin_merge_bump_feeds_round_min_mutation_ts() {
+        set_test_now_ms(Some(10_000));
+        let mut db = Database::default();
+        db.begin_round(0);
+        let mut local = CheckIn::new("阅读", Repeat::Daily);
+        local.id = "ci".into();
+        local.history.insert("2026-10-01".into(), true);
+        local.sync_ts = 100;
+        db.checkins.push(local);
+
+        let mut remote = CheckIn::new("阅读", Repeat::Daily);
+        remote.id = "ci".into();
+        remote.history.insert("2026-10-02".into(), false);
+        let change = live_change(EntityKind::Checkin, "ci", 50, &remote);
+
+        assert_eq!(db.apply_remote(&change), ApplyOutcome::MergedBumped);
+        let bump = db.checkins[0].sync_ts;
+        assert_eq!(bump, 101);
+        // 合并 bump 必须折进本轮最小改动戳：否则水位会把它挡在下一轮之外。
+        assert_eq!(db.round_min_mutation_ts(), Some(bump));
+
+        // 再来一次合并：bump 更大，但 round_min 取本轮更小者（保持 ≤ 任一次 bump）。
+        let mut remote2 = CheckIn::new("阅读", Repeat::Daily);
+        remote2.id = "ci".into();
+        remote2.history.insert("2026-10-03".into(), true);
+        let change2 = live_change(EntityKind::Checkin, "ci", 102, &remote2);
+        assert_eq!(db.apply_remote(&change2), ApplyOutcome::MergedBumped);
+        assert_eq!(db.checkins[0].sync_ts, 103);
+        assert_eq!(db.round_min_mutation_ts(), Some(101));
+
+        // 新一轮：round_min 归零后，单次合并 bump 重新成为下限。
+        db.begin_round(0);
+        assert_eq!(db.round_min_mutation_ts(), None);
+        let mut remote3 = CheckIn::new("阅读", Repeat::Daily);
+        remote3.id = "ci".into();
+        remote3.history.insert("2026-10-04".into(), true);
+        let change3 = live_change(EntityKind::Checkin, "ci", 50, &remote3);
+        assert_eq!(db.apply_remote(&change3), ApplyOutcome::MergedBumped);
+        assert_eq!(db.checkins[0].sync_ts, 104);
+        assert_eq!(db.round_min_mutation_ts(), Some(104));
+
+        set_test_now_ms(None);
     }
 
     #[test]

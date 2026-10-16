@@ -16,8 +16,8 @@
 use std::collections::VecDeque;
 
 use course_plan_sync_proto::{
-    AuthResponse, Change, Credentials, EntityKind, HealthResponse, MAX_PUSH_BYTES,
-    MAX_PUSH_CHANGES, PullResponse, PushResponse, outbound_cap,
+    AuthResponse, Change, Credentials, EntityKind, HealthResponse, MAX_PAYLOAD_BYTES,
+    MAX_PUSH_BYTES, MAX_PUSH_CHANGES, PullResponse, PushResponse, outbound_cap,
 };
 
 /// 可注入时钟：返回当前 unix 毫秒。
@@ -147,9 +147,11 @@ pub enum SyncCommand {
         round_id: u64,
         changes: Vec<Change>,
     },
-    /// UI 已持久化（data.json / sync.json）后回执，核心据此推进轮次。
+    /// UI 持久化回执，核心据此推进轮次。`ok=false` 表示持久化失败：核心**不推进
+    /// 游标/水位**，走常规失败路径（退避重试），由幂等重放修正。
     AckRound {
         round_id: u64,
+        ok: bool,
     },
     /// 首登策略选定（响应 [`SyncEvent::ProbeResult`]）。
     FirstLoginPolicy {
@@ -175,10 +177,11 @@ pub enum SyncEvent {
     ApplyBatch {
         round_id: u64,
         changes: Vec<Change>,
-        last_seq: u64,
         /// 云端覆盖本地：UI 先重置数据库再逐条 apply（不产生墓碑）。
         replace_all: bool,
     },
+    /// 非致命提示（如单条 payload 超限被跳过），UI 应展示一次（通知 / sync_notice）。
+    Warning(String),
     /// 首登探针结果，UI 据此弹对话框并回 [`SyncCommand::FirstLoginPolicy`]。
     ProbeResult {
         round_id: u64,
@@ -227,10 +230,29 @@ enum Mode {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Next {
-    Pull { since: u64, first: bool },
-    Finalize { latest_seq: u64 },
+    Pull {
+        since: u64,
+        first: bool,
+        resume: ResumeAfter,
+    },
+    Finalize {
+        latest_seq: u64,
+    },
+    /// 预拉取（首登 Merge）完成后转入候选 → 推送阶段。
+    Candidates {
+        latest_seq: u64,
+    },
+}
+
+/// pull 分页全部读完后（`has_more=false`）的归属。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResumeAfter {
+    /// 收尾轮次（推进游标）。
+    Finalize,
+    /// 首登 Merge 预拉取：应用后再推本地（`latest_seq` 作为 push 后增量拉取的 since）。
+    Candidates,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +271,8 @@ enum Phase {
         round_id: u64,
         c0: i64,
         mode: Mode,
+        /// 首登 Merge 预拉取完成时的 `latest_seq`；作为 push 后增量拉取的 since。
+        pull_from: Option<u64>,
     },
     Push {
         round_id: u64,
@@ -264,6 +288,7 @@ enum Phase {
         mode: Mode,
         since: u64,
         first: bool,
+        resume: ResumeAfter,
     },
     AwaitAck {
         round_id: u64,
@@ -369,6 +394,9 @@ impl<A: SyncApi> SyncCore<A> {
                             self.device_id = format!("dev-{}-{}", (self.clock)(), auth.user.id);
                         }
                         // 登录成功 → 探针（§6）。游标在策略选定后按策略重置。
+                        // 重新登录清除旧的退避（避免沿用上一次会话的长退避）。
+                        self.retry_at = None;
+                        self.retry_index = 0;
                         self.last_server_time_ms = None;
                         events.push(SyncEvent::AuthResult {
                             ok: true,
@@ -418,8 +446,8 @@ impl<A: SyncApi> SyncCore<A> {
             SyncCommand::Candidates { round_id, changes } => {
                 self.on_candidates(round_id, changes, &mut events);
             }
-            SyncCommand::AckRound { round_id } => {
-                self.on_ack(round_id, &mut events);
+            SyncCommand::AckRound { round_id, ok } => {
+                self.on_ack(round_id, ok, &mut events);
             }
             SyncCommand::FirstLoginPolicy { round_id, policy } => {
                 self.on_policy(round_id, policy, &mut events);
@@ -504,32 +532,53 @@ impl<A: SyncApi> SyncCore<A> {
         let c0 = (self.clock)();
         self.set_status(Status::Syncing, events);
         events.push(SyncEvent::RoundStarted { round_id });
-        if matches!(mode, Mode::CloudWins) {
-            // 云端覆盖本地：无需候选，直接全量 pull（首批 replace_all）。
-            self.phase = Phase::Pull {
-                round_id,
-                c0,
-                mode,
-                since: 0,
-                first: true,
-            };
-        } else {
-            let full = !matches!(mode, Mode::Normal);
-            self.phase = Phase::AwaitCandidates { round_id, c0, mode };
-            events.push(SyncEvent::NeedCandidates { round_id, full });
+        match mode {
+            Mode::CloudWins => {
+                // 云端覆盖本地：无需候选，直接全量 pull（首批 replace_all）。
+                self.phase = Phase::Pull {
+                    round_id,
+                    c0,
+                    mode,
+                    since: 0,
+                    first: true,
+                    resume: ResumeAfter::Finalize,
+                };
+            }
+            Mode::Merge => {
+                // 首登合并（§6-3a）：先全量拉取并应用，再推本地，最后拉增量收尾。
+                self.phase = Phase::Pull {
+                    round_id,
+                    c0,
+                    mode,
+                    since: 0,
+                    first: true,
+                    resume: ResumeAfter::Candidates,
+                };
+            }
+            other => {
+                let full = !matches!(other, Mode::Normal);
+                self.phase = Phase::AwaitCandidates {
+                    round_id,
+                    c0,
+                    mode: other,
+                    pull_from: None,
+                };
+                events.push(SyncEvent::NeedCandidates { round_id, full });
+            }
         }
     }
 
     // MARK: - 命令处理
 
-    fn on_candidates(&mut self, round_id: u64, changes: Vec<Change>, _events: &mut Vec<SyncEvent>) {
+    fn on_candidates(&mut self, round_id: u64, changes: Vec<Change>, events: &mut Vec<SyncEvent>) {
         let phase = std::mem::replace(&mut self.phase, Phase::Idle);
-        let (c0, mode) = match phase {
+        let (c0, mode, resume_pull_from) = match phase {
             Phase::AwaitCandidates {
                 round_id: rid,
                 c0,
                 mode,
-            } if rid == round_id => (c0, mode),
+                pull_from,
+            } if rid == round_id => (c0, mode, pull_from),
             other => {
                 // 非预期/过期回执：恢复原状态。
                 self.phase = other;
@@ -551,13 +600,17 @@ impl<A: SyncApi> SyncCore<A> {
                 });
             }
         }
+        // 客户端侧超限保护：单条 payload 超上限的变更跳过（否则服务端 413 会陷入
+        // 无限退避），并一次性告警（§4）。
+        all = drop_oversize(all, events);
         // 协议 §5.3：按 ts 升序推送。
         all.sort_by_key(|c| c.updated_at);
         let batches = shard(all, &self.device_id, self.last_server_time_ms);
-        let pull_from = if matches!(mode, Mode::Normal) {
-            self.last_seq
-        } else {
-            0
+        let pull_from = match mode {
+            Mode::Normal => self.last_seq,
+            // 首登 Merge：预拉取已读到的 latest_seq，作为 push 后增量拉取的 since。
+            Mode::Merge => resume_pull_from.unwrap_or(0),
+            _ => 0,
         };
         self.phase = Phase::Push {
             round_id,
@@ -569,8 +622,31 @@ impl<A: SyncApi> SyncCore<A> {
         };
     }
 
-    fn on_ack(&mut self, round_id: u64, events: &mut Vec<SyncEvent>) {
+    fn on_ack(&mut self, round_id: u64, ok: bool, events: &mut Vec<SyncEvent>) {
         let phase = std::mem::replace(&mut self.phase, Phase::Idle);
+        if !ok {
+            // 本地持久化失败：**不推进**游标/水位，走常规失败路径（退避重试）。
+            // 内存状态保留，重试轮自旧游标重放，apply 幂等。
+            let expected = match &phase {
+                Phase::AwaitAck { round_id: rid, .. } => *rid == round_id,
+                Phase::AwaitFinalAck { round_id: rid, .. } => *rid == round_id,
+                _ => false,
+            };
+            if expected {
+                self.fail(
+                    ApiError::Status {
+                        status: 0,
+                        code: None,
+                        message: "本地持久化失败，稍后重试".to_string(),
+                    },
+                    events,
+                );
+            } else {
+                // 过期 / 非预期回执：忽略。
+                self.phase = phase;
+            }
+            return;
+        }
         match phase {
             Phase::AwaitAck {
                 round_id: rid,
@@ -578,20 +654,7 @@ impl<A: SyncApi> SyncCore<A> {
                 mode,
                 next,
             } if rid == round_id => {
-                self.phase = match next {
-                    Next::Pull { since, first } => Phase::Pull {
-                        round_id,
-                        c0,
-                        mode,
-                        since,
-                        first,
-                    },
-                    Next::Finalize { latest_seq } => Phase::Finalize {
-                        round_id,
-                        c0,
-                        latest_seq,
-                    },
-                };
+                self.advance(round_id, c0, mode, next, events);
             }
             Phase::AwaitFinalAck {
                 round_id: rid,
@@ -618,6 +681,53 @@ impl<A: SyncApi> SyncCore<A> {
             other => {
                 // 过期 / 非预期回执：忽略。
                 self.phase = other;
+            }
+        }
+    }
+
+    /// 依据 [`Next`] 推进到下一阶段（可能发出 [`SyncEvent::NeedCandidates`]）。
+    fn advance(
+        &mut self,
+        round_id: u64,
+        c0: i64,
+        mode: Mode,
+        next: Next,
+        events: &mut Vec<SyncEvent>,
+    ) {
+        match next {
+            Next::Pull {
+                since,
+                first,
+                resume,
+            } => {
+                self.phase = Phase::Pull {
+                    round_id,
+                    c0,
+                    mode,
+                    since,
+                    first,
+                    resume,
+                };
+            }
+            Next::Finalize { latest_seq } => {
+                self.phase = Phase::Finalize {
+                    round_id,
+                    c0,
+                    latest_seq,
+                };
+            }
+            Next::Candidates { latest_seq } => {
+                // 首登 Merge 预拉取完成 → 应用后再推本地。
+                self.phase = Phase::AwaitCandidates {
+                    round_id,
+                    c0,
+                    mode,
+                    pull_from: Some(latest_seq),
+                };
+                events.push(SyncEvent::NeedCandidates {
+                    round_id,
+                    full: true,
+                });
             }
         }
     }
@@ -762,13 +872,13 @@ impl<A: SyncApi> SyncCore<A> {
                             mode,
                             since: pull_from,
                             first: true,
+                            resume: ResumeAfter::Finalize,
                         };
                         continue;
                     }
                     events.push(SyncEvent::ApplyBatch {
                         round_id,
                         changes: overridden,
-                        last_seq: 0,
                         replace_all: false,
                     });
                     self.phase = Phase::AwaitAck {
@@ -778,6 +888,7 @@ impl<A: SyncApi> SyncCore<A> {
                         next: Next::Pull {
                             since: pull_from,
                             first: true,
+                            resume: ResumeAfter::Finalize,
                         },
                     };
                     break;
@@ -788,18 +899,19 @@ impl<A: SyncApi> SyncCore<A> {
                     mode,
                     since,
                     first,
+                    resume,
                 } => match self.api.pull(&self.server_url, &self.token, since).await {
                     Ok(resp) => {
                         self.last_server_time_ms = Some(resp.server_time_ms);
                         let replace_all = first && matches!(mode, Mode::CloudWins);
                         let changes = resp.changes.clone();
-                        let last_seq = resp.latest_seq;
                         let has_more = resp.has_more;
                         let next = if has_more {
                             match next_cursor(&resp, since) {
                                 Some(next) => Next::Pull {
                                     since: next,
                                     first: false,
+                                    resume,
                                 },
                                 None => {
                                     self.fail(
@@ -814,33 +926,25 @@ impl<A: SyncApi> SyncCore<A> {
                                 }
                             }
                         } else {
-                            Next::Finalize {
-                                latest_seq: resp.latest_seq,
+                            match resume {
+                                // 首登 Merge 预拉取完成 → 转推送。
+                                ResumeAfter::Candidates => Next::Candidates {
+                                    latest_seq: resp.latest_seq,
+                                },
+                                ResumeAfter::Finalize => Next::Finalize {
+                                    latest_seq: resp.latest_seq,
+                                },
                             }
                         };
 
                         if changes.is_empty() && !replace_all {
                             // 空批无需 UI 回执：直接推进。
-                            self.phase = match next {
-                                Next::Pull { since, first } => Phase::Pull {
-                                    round_id,
-                                    c0,
-                                    mode,
-                                    since,
-                                    first,
-                                },
-                                Next::Finalize { latest_seq } => Phase::Finalize {
-                                    round_id,
-                                    c0,
-                                    latest_seq,
-                                },
-                            };
+                            self.advance(round_id, c0, mode, next, events);
                             continue;
                         }
                         events.push(SyncEvent::ApplyBatch {
                             round_id,
                             changes,
-                            last_seq,
                             replace_all,
                         });
                         self.phase = Phase::AwaitAck {
@@ -935,6 +1039,36 @@ fn next_cursor(resp: &PullResponse, since: u64) -> Option<u64> {
         return None;
     }
     Some(cursor)
+}
+
+/// 丢弃单条 payload 超过 [`MAX_PAYLOAD_BYTES`] 的变更（服务端会 413，且除非跳过否则
+/// 每轮重推会陷入无限退避）。每轮至多发一条 [`SyncEvent::Warning`]，点名首个超限实体（§4）。
+fn drop_oversize(changes: Vec<Change>, events: &mut Vec<SyncEvent>) -> Vec<Change> {
+    let mut kept = Vec::with_capacity(changes.len());
+    let mut first_offender: Option<(EntityKind, String, usize)> = None;
+    for change in changes {
+        let size = change
+            .payload
+            .as_ref()
+            .and_then(|payload| serde_json::to_vec(payload).ok())
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        if size > MAX_PAYLOAD_BYTES {
+            if first_offender.is_none() {
+                first_offender = Some((change.kind, change.id.clone(), size));
+            }
+            continue;
+        }
+        kept.push(change);
+    }
+    if let Some((kind, id, size)) = first_offender {
+        events.push(SyncEvent::Warning(format!(
+            "数据过大已跳过同步：{} {}（{size} 字节，超过 {MAX_PAYLOAD_BYTES} 字节上限）",
+            kind.label_cn(),
+            id,
+        )));
+    }
+    kept
 }
 
 /// 按 ≤500 条 且 ≤3 MiB 分片，并在推送前填充 `device_id` 与出站戳收敛上限（§2.5 / §4）。

@@ -10,6 +10,7 @@ use course_plan_sync_proto::{
 };
 
 use super::*;
+use crate::model::{Course, CourseKind, Database};
 
 // ─────────────────────────────── 假实现 ───────────────────────────────
 
@@ -170,9 +171,11 @@ fn reply(
         }),
         SyncEvent::ApplyBatch { round_id, .. } => Some(SyncCommand::AckRound {
             round_id: *round_id,
+            ok: true,
         }),
         SyncEvent::RoundComplete { round_id, .. } => Some(SyncCommand::AckRound {
             round_id: *round_id,
+            ok: true,
         }),
         SyncEvent::ProbeResult { round_id, .. } => Some(SyncCommand::FirstLoginPolicy {
             round_id: *round_id,
@@ -336,7 +339,9 @@ async fn pending_trigger_reruns_after_round() {
     })
     .await;
     // 完成本轮 → 立刻补跑（同一 ack 调用里应产出新的 NeedCandidates）。
-    let done = core.handle(SyncCommand::AckRound { round_id }).await;
+    let done = core
+        .handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
     assert!(has_need_candidates(&done), "完成后应立即补跑 pending 轮次");
 }
 
@@ -375,8 +380,9 @@ async fn batching_splits_by_bytes() {
     let (_clock, clock_fn) = fake_clock(1_000);
     let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
 
-    let big = "x".repeat(1_000_000);
-    let candidates: Vec<Change> = (0..5)
+    // 每条 payload 均在 256 KiB 单条上限内，但总量超过 3 MiB → 必须按字节分片。
+    let big = "x".repeat(200_000);
+    let candidates: Vec<Change> = (0..20)
         .map(|i| Change {
             kind: EntityKind::Memo,
             id: format!("m{i}"),
@@ -399,11 +405,55 @@ async fn batching_splits_by_bytes() {
     let batches = api.pushes();
     assert!(batches.len() >= 2, "大负载应按 3 MiB 分片");
     let flattened: usize = batches.iter().map(Vec::len).sum();
-    assert_eq!(flattened, 5, "不丢变更");
+    assert_eq!(flattened, 20, "不丢变更");
     for batch in &batches {
         let size = serde_json::to_vec(batch).unwrap().len();
         assert!(size <= MAX_PUSH_BYTES, "分片负载超过 3 MiB：{size}");
     }
+}
+
+// ─────────────────────────────── 单条超限保护 ───────────────────────────────
+
+#[tokio::test]
+async fn oversize_payload_is_skipped_with_warning() {
+    let api = FakeApi::default();
+    let (_clock, clock_fn) = fake_clock(1_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+
+    let oversized = Change {
+        kind: EntityKind::Memo,
+        id: "toobig".into(),
+        updated_at: 1,
+        deleted: false,
+        device_id: String::new(),
+        payload: Some(serde_json::json!({ "id": "toobig", "content": "x".repeat(300_000) })),
+        server_seq: None,
+    };
+    let normal = course_change("small", 1);
+
+    let events = pump(
+        &mut core,
+        vec![SyncCommand::SyncNow],
+        &[oversized, normal],
+        &FirstLoginPolicy::Merge,
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, SyncEvent::Warning(_))),
+        "超限变更应触发一次告警"
+    );
+    let pushed: Vec<Change> = api.pushes().into_iter().flatten().collect();
+    assert!(
+        pushed.iter().all(|change| change.id != "toobig"),
+        "超限变更应被跳过，避免服务端 413 无限退避"
+    );
+    assert!(
+        pushed.iter().any(|change| change.id == "small"),
+        "正常变更仍应被推送"
+    );
 }
 
 // ─────────────────────────────── 游标规则 ───────────────────────────────
@@ -511,7 +561,8 @@ async fn offline_retries_then_recovers() {
         changes: Vec::new(),
     })
     .await;
-    core.handle(SyncCommand::AckRound { round_id }).await;
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
 
     assert_eq!(
         core.status(),
@@ -664,7 +715,8 @@ async fn local_wins_tombstones_server_only_ids() {
         changes: vec![course_change("a", 10_000)],
     })
     .await;
-    core.handle(SyncCommand::AckRound { round_id }).await;
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
 
     let pushed: Vec<Change> = api.pushes().into_iter().flatten().collect();
     let tombstoned: Vec<(EntityKind, String)> = pushed
@@ -683,5 +735,195 @@ async fn local_wins_tombstones_server_only_ids() {
     assert!(
         !tombstoned.iter().any(|(_, id)| id == "a"),
         "本地已有的 a 不应被墓碑"
+    );
+}
+
+// ───────────────────────── FIX 1 / 崩溃重放（driver 级） ─────────────────────────
+
+/// 构造一条可被 [`Database::apply_remote`] 解析的真实 course 实时变更。
+fn course_live_change(id: &str, name: &str, ts: i64, seq: u64) -> Change {
+    let mut course = Course::new(name, CourseKind::School);
+    course.id = id.into();
+    Change {
+        kind: EntityKind::Course,
+        id: id.into(),
+        updated_at: ts,
+        deleted: false,
+        device_id: String::new(),
+        payload: Some(serde_json::to_value(&course).unwrap()),
+        server_seq: Some(seq),
+    }
+}
+
+fn need_round_id(events: &[SyncEvent]) -> u64 {
+    events
+        .iter()
+        .find_map(|event| match event {
+            SyncEvent::NeedCandidates { round_id, .. } => Some(*round_id),
+            _ => None,
+        })
+        .expect("应产出 NeedCandidates")
+}
+
+fn find_apply_batch(events: &[SyncEvent]) -> Vec<Change> {
+    events
+        .iter()
+        .find_map(|event| match event {
+            SyncEvent::ApplyBatch { changes, .. } => Some(changes.clone()),
+            _ => None,
+        })
+        .expect("应产出 ApplyBatch")
+}
+
+fn snapshot_course(db: &Database, id: &str) -> Option<(String, i64)> {
+    db.courses
+        .iter()
+        .find(|course| course.id == id)
+        .map(|course| (course.name.clone(), course.sync_ts))
+}
+
+fn pull_one(change: Change, latest_seq: u64) -> PullResponse {
+    PullResponse {
+        changes: vec![change],
+        latest_seq,
+        has_more: false,
+        server_time_ms: 5_000,
+    }
+}
+
+/// FIX 1：最终 ack `ok=false`（sync.json 落盘失败）时游标不变、状态进入可重试；
+/// 退避到点重试后幂等重放并推进游标。
+#[tokio::test]
+async fn persist_failure_keeps_cursor_and_replays_idempotently() {
+    let api = FakeApi::default();
+    let change = course_live_change("c1", "服务器", 111, 9);
+    api.push_pull(Ok(pull_one(change.clone(), 9)));
+    api.push_pull(Ok(pull_one(change, 9)));
+
+    let (clock, clock_fn) = fake_clock(10_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+    let mut db = Database::default();
+
+    // 轮次 1：跑完 → ApplyBatch(data.json ok) → RoundComplete(sync.json 失败)。
+    let need = core.handle(SyncCommand::SyncNow).await;
+    let round_id = need_round_id(&need);
+    let applied = core
+        .handle(SyncCommand::Candidates {
+            round_id,
+            changes: Vec::new(),
+        })
+        .await;
+    for change in &find_apply_batch(&applied) {
+        db.apply_remote(change);
+    }
+    let snapshot = snapshot_course(&db, "c1");
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+    let complete = core
+        .handle(SyncCommand::AckRound {
+            round_id,
+            ok: false,
+        })
+        .await;
+
+    assert_eq!(core.last_seq(), 0, "落盘失败不得推进游标");
+    assert!(
+        matches!(core.status(), Status::Error { .. }),
+        "落盘失败应进入可重试状态：{:?}",
+        core.status()
+    );
+    assert!(
+        !complete
+            .iter()
+            .any(|event| matches!(event, SyncEvent::StatusChanged(Status::Idle { .. }))),
+        "落盘失败不得翻成 Idle-success"
+    );
+
+    // 退避到点 → 重试；重放 apply 幂等。
+    clock.store(15_000, Ordering::Relaxed);
+    let retry = core.tick().await;
+    let round_id = need_round_id(&retry);
+    let applied = core
+        .handle(SyncCommand::Candidates {
+            round_id,
+            changes: Vec::new(),
+        })
+        .await;
+    for change in &find_apply_batch(&applied) {
+        db.apply_remote(change);
+    }
+    assert_eq!(snapshot_course(&db, "c1"), snapshot, "重放 apply 应幂等");
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+
+    assert_eq!(core.last_seq(), 9, "重试成功后游标推进");
+    assert!(matches!(core.status(), Status::Idle { .. }));
+    assert_eq!(
+        db.courses.iter().filter(|c| c.id == "c1").count(),
+        1,
+        "不应产生重复实体"
+    );
+}
+
+/// 崩溃重放：跑到 RoundComplete 后跳过 final ack；用**已持久化游标**重建核心并重放同一
+/// 脚本 → 重新拉取 + 幂等 apply（数据不变、无重复）。
+#[tokio::test]
+async fn crash_before_final_ack_replays_idempotently() {
+    let api = FakeApi::default();
+    let change = course_live_change("c1", "服务器", 111, 5);
+    api.push_pull(Ok(pull_one(change.clone(), 5)));
+    api.push_pull(Ok(pull_one(change, 5)));
+
+    let (_c1, clock1) = fake_clock(10_000);
+    let (_c2, clock2) = fake_clock(10_000);
+    let mut db = Database::default();
+
+    // 会话 1：跑到 RoundComplete 后崩溃（不 ack final）。
+    let mut core1 = SyncCore::new(api.clone(), clock1, config("t", 0));
+    let need = core1.handle(SyncCommand::SyncNow).await;
+    let round_id = need_round_id(&need);
+    let applied = core1
+        .handle(SyncCommand::Candidates {
+            round_id,
+            changes: Vec::new(),
+        })
+        .await;
+    for change in &find_apply_batch(&applied) {
+        db.apply_remote(change);
+    }
+    let snapshot = snapshot_course(&db, "c1");
+    core1
+        .handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+    assert_eq!(core1.last_seq(), 0, "崩溃前游标未推进");
+
+    // 会话 2：用已持久化游标（0）重建核心，重放同一脚本。
+    let mut core2 = SyncCore::new(api.clone(), clock2, config("t", 0));
+    let need = core2.handle(SyncCommand::SyncNow).await;
+    let round_id = need_round_id(&need);
+    let applied = core2
+        .handle(SyncCommand::Candidates {
+            round_id,
+            changes: Vec::new(),
+        })
+        .await;
+    for change in &find_apply_batch(&applied) {
+        db.apply_remote(change);
+    }
+    assert_eq!(snapshot_course(&db, "c1"), snapshot, "重放应不改变数据");
+    core2
+        .handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+    core2
+        .handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+
+    assert_eq!(core2.last_seq(), 5, "重放后游标推进");
+    assert_eq!(
+        db.courses.iter().filter(|c| c.id == "c1").count(),
+        1,
+        "重放不应产生重复实体"
     );
 }

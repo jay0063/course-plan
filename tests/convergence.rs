@@ -147,6 +147,11 @@ struct Client {
     policy: PolicyKind,
     server_url: String,
     last_status: Status,
+    /// 若为 true：本轮持久化被模拟为失败（回执 `ok:false`），用后清零。
+    fail_next_persist: bool,
+    /// 若非空：在下一次 `NeedCandidates`（收集候选之后）注入一次本地编辑，
+    /// 以模拟「轮次进行中本地又发生改动」，用后清零。
+    inject_course: Option<(String, String)>,
 }
 
 fn now_real_ms() -> i64 {
@@ -178,11 +183,17 @@ impl Client {
             policy,
             server_url: server_url.to_string(),
             last_status: Status::LoggedOut,
+            fail_next_persist: false,
+            inject_course: None,
         }
     }
 
     fn set_online(&self, online: bool) {
         self.online.store(online, Ordering::Relaxed);
+    }
+
+    fn last_seq(&self) -> u64 {
+        self.core.last_seq()
     }
 
     async fn login(&mut self, username: &str, password: &str, register: bool) {
@@ -214,6 +225,11 @@ impl Client {
                         let since = if full { 0 } else { self.db.stamp_floor_ms };
                         let changes = self.db.all_changes(since);
                         queue.push_back(SyncCommand::Candidates { round_id, changes });
+                        // 候选已收集 → 此刻注入「轮次进行中」的本地编辑（会记入
+                        // round_min_mut_ts，必须在下一轮被补推）。
+                        if let Some((id, name)) = self.inject_course.take() {
+                            seed_course(&mut self.db, &id, &name);
+                        }
                     }
                     SyncEvent::ApplyBatch {
                         round_id,
@@ -227,7 +243,8 @@ impl Client {
                         for change in &changes {
                             self.db.apply_remote(change);
                         }
-                        queue.push_back(SyncCommand::AckRound { round_id });
+                        let ok = !std::mem::take(&mut self.fail_next_persist);
+                        queue.push_back(SyncCommand::AckRound { round_id, ok });
                     }
                     SyncEvent::ProbeResult { round_id, probe } => {
                         let policy = self.choose_policy(&probe);
@@ -238,14 +255,23 @@ impl Client {
                         watermark_base_ms,
                         ..
                     } => {
-                        let watermark = match self.db.round_min_mutation_ts() {
-                            Some(min) => watermark_base_ms.min(min),
-                            None => watermark_base_ms,
-                        };
-                        self.db.stamp_floor_ms = watermark;
-                        queue.push_back(SyncCommand::AckRound { round_id });
+                        if std::mem::take(&mut self.fail_next_persist) {
+                            // 模拟 sync.json 落盘失败：游标/水位不推进，回 ok=false。
+                            queue.push_back(SyncCommand::AckRound {
+                                round_id,
+                                ok: false,
+                            });
+                        } else {
+                            let watermark = match self.db.round_min_mutation_ts() {
+                                Some(min) => watermark_base_ms.min(min),
+                                None => watermark_base_ms,
+                            };
+                            self.db.stamp_floor_ms = watermark;
+                            queue.push_back(SyncCommand::AckRound { round_id, ok: true });
+                        }
                     }
                     SyncEvent::AuthResult { .. } => {}
+                    SyncEvent::Warning(_) => {}
                     SyncEvent::StatusChanged(status) => self.last_status = status,
                 }
             }
@@ -553,6 +579,176 @@ async fn delete_vs_edit_resurrects_via_lww() {
     assert_converged(&clients, None);
     assert!(clients[1].db.course("c1").is_some(), "编辑应复活实体");
     assert_eq!(clients[1].db.course("c1").unwrap().name, "B复活");
+}
+
+// ─────────────────── Gate-2 复审修复回归（R2） ───────────────────
+
+/// FIX 2：checkin 合并 bump 必须折进本轮水位（`round_min_mut_ts`），否则水位会
+/// 把合并后的并集挡在下一轮之外。场景：A/B 共享打卡 → B 离线勾选一天 → A 编辑并
+/// 同步 → B 重连（overridden 合并 bump）→ B **再跑一轮零本地改动** → A 应收到 B 的键。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checkin_merge_bump_survives_watermark() {
+    let server = start_server().await;
+    let mut clients = [
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+    ];
+
+    let mut ci = CheckIn::new("阅读", Repeat::Daily);
+    ci.id = "ci".into();
+    ci.history.insert("2026-10-01".into(), true);
+    clients[0].db.checkins.push(ci);
+    clients[0].login("mergebump", "password123", true).await; // 服务端空 → 推送
+    clients[1].login("mergebump", "password123", false).await; // 拉取
+    assert!(
+        clients[1].db.checkins.iter().any(|c| c.id == "ci"),
+        "B 应拉到共享打卡"
+    );
+
+    let day_b = course_plan::model::date_of(2);
+    let day_a = course_plan::model::date_of(3);
+
+    // B 离线勾选一天（本地编辑，同步失败）。
+    clients[1].set_online(false);
+    clients[1].db.set_checkin_done("ci", day_b, true);
+    clients[1].sync().await;
+    assert_eq!(clients[1].last_status, Status::Offline);
+
+    // A 在线勾选另一天并同步（服务端版本更新）。
+    clients[0].db.set_checkin_done("ci", day_a, true);
+    clients[0].sync().await;
+
+    // B 重连：第一次 sync 走 overridden 合并 bump；**再跑一轮零本地改动**应补推并集。
+    clients[1].set_online(true);
+    clients[1].sync().await;
+    clients[1].sync().await;
+
+    // A 再同步接收 B 勾选的那天。
+    clients[0].sync().await;
+
+    let a = clients[0]
+        .db
+        .checkins
+        .iter()
+        .find(|c| c.id == "ci")
+        .unwrap();
+    assert!(
+        a.done_on(day_b),
+        "A 应收到 B 勾选的那天（合并 bump 不得被水位挡掉）"
+    );
+    assert!(a.done_on(day_a), "A 自己的编辑也应保留");
+}
+
+/// FIX 1：持久化失败不得推进游标；随后重试幂等重放并收敛。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persist_failure_defers_cursor_then_recovers() {
+    let server = start_server().await;
+    let mut clients = vec![
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+    ];
+    seed_course(&mut clients[0].db, "c1", "初始");
+    clients[0].login("persistfail", "password123", true).await;
+    clients[1].login("persistfail", "password123", false).await;
+    settle(&mut clients, 4).await;
+
+    let before = clients[1].last_seq();
+    let mut edited = clients[1].db.course("c1").unwrap().clone();
+    edited.name = "本地改".into();
+    clients[1].db.save_course(edited);
+
+    // 让本轮落盘失败（sync.json）→ 回执 ok=false。
+    clients[1].fail_next_persist = true;
+    clients[1].sync().await;
+
+    assert_eq!(clients[1].last_seq(), before, "持久化失败不得推进游标");
+    assert!(
+        matches!(
+            clients[1].last_status,
+            Status::Error { .. } | Status::Offline
+        ),
+        "持久化失败应进入可重试状态：{:?}",
+        clients[1].last_status
+    );
+
+    // 重试（手动触发，退避路径等价）→ 幂等重放并收敛。
+    settle(&mut clients, 6).await;
+    assert_converged(&clients, None);
+    assert_eq!(
+        clients[1].db.course("c1").unwrap().name,
+        "本地改",
+        "重试后本地编辑应落库并被对端看到"
+    );
+}
+
+/// FIX「轮次进行中本地编辑」：从 `NeedCandidates` 之后注入的编辑必须记入
+/// `round_min_mut_ts`，从而在下一轮被补推。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_during_in_flight_round_is_pushed_next_round() {
+    let server = start_server().await;
+    let mut clients = vec![
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+    ];
+    seed_course(&mut clients[0].db, "c1", "初始");
+    clients[0].login("inflight", "password123", true).await;
+    clients[1].login("inflight", "password123", false).await;
+    settle(&mut clients, 4).await;
+
+    // 本轮候选收集之后注入一次本地编辑（模拟轮内改动）。
+    clients[0].inject_course = Some(("inflight-new".into(), "轮内新增".into()));
+    clients[0].sync().await; // 轮内注入
+    clients[0].sync().await; // 零本地改动的补推轮
+    clients[1].sync().await; // 对端拉取
+
+    assert!(
+        clients[1].db.course("inflight-new").is_some(),
+        "轮内注入的编辑应在下一轮被补推给对端"
+    );
+    assert_converged(&clients, None);
+}
+
+/// 平局（时间戳相同）不同内容：服务端持有者胜，双方收敛到服务端版本。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn equal_timestamp_tie_converges_to_server_version() {
+    let server = start_server().await;
+    let mut clients = vec![
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+        Client::new(&server.base, Database::default(), PolicyKind::Auto),
+    ];
+    seed_course(&mut clients[0].db, "c1", "server-version");
+    clients[0].login("tie", "password123", true).await;
+    clients[1].login("tie", "password123", false).await;
+    settle(&mut clients, 4).await;
+
+    // B 在与服务端**相同**的时间戳上改内容（平局）。
+    let server_ts = clients[1].db.course("c1").unwrap().sync_ts;
+    {
+        let course = clients[1]
+            .db
+            .courses
+            .iter_mut()
+            .find(|c| c.id == "c1")
+            .unwrap();
+        course.name = "client-version".into();
+        course.sync_ts = server_ts;
+    }
+    clients[1].db.stamp_floor_ms = 0; // 确保本变更进入候选
+    clients[1].sync().await; // 平局 → 服务端胜（overridden）
+    clients[0].sync().await;
+
+    settle(&mut clients, 3).await;
+    assert_converged(&clients, None);
+    assert_eq!(
+        clients[0].db.course("c1").unwrap().name,
+        "server-version",
+        "平局应让位服务端版本"
+    );
+    assert_eq!(
+        clients[1].db.course("c1").unwrap().name,
+        "server-version",
+        "平局应让位服务端版本"
+    );
 }
 
 // ─────────────────────────────── 随机化收敛 ───────────────────────────────
