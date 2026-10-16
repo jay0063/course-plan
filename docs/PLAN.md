@@ -154,7 +154,7 @@ course-plan/
 | 静态 | `cargo fmt --check`；`cargo clippy --workspace --all-targets -- -D warnings` |
 | 客户端单测 | 单调戳规则、墓碑、store 迁移与损坏备份、checkin 合并、退避状态机 |
 | 同步集成 | 进程内起真实 server（axum + temp sqlite），双客户端 DB 收敛（含删除、冲突、首登三策略、history 合并、overridden 重试） |
-| **收敛性** | **随机化收敛测试**：3 个内存客户端 × 随机操作（增/改/删/打卡/清空）× 随机交错 push/pull → 静默后断言全部客户端状态一致；`sync::core` 无 UI 依赖以便直接驱动 |
+| **收敛性** | **随机化收敛测试**：3 个内存客户端 × 随机操作（增/改/删/打卡/清空）× 随机交错 push/pull → 静默后断言全部客户端状态一致；`sync::core` 无 UI 依赖 + 注入可测 `now_ms`（确定性时钟，显式覆盖 clamp 平局路径） |
 | 服务端 | 端点集成测试（鉴权失败/重复注册/pull 游标与读快照/push 裁决/分页与批次上限/墓碑/clamp） |
 | 容器 | `docker build` + `docker compose up` + healthcheck + 卷持久化重启 + curl 往返；`docker compose down -v` 清理 |
 | UI | 无头渲染（HeadlessAppContext, lavapipe）：全页截图（浅/深）+ 关键交互冒烟（开编辑器/打卡/tab 切换）；无 GPU 环境自动跳过 |
@@ -171,6 +171,7 @@ course-plan/
 | 新设备首登冲突（双方皆有数据） | 探针 + 三选一对话框：合并(LWW, 推荐) / 云端覆盖本地 / 本地覆盖云端（语义见协议 §6） |
 | checkin.history 丢打卡 | 统一 apply 内 map 合并（远端平局胜），bump 后保持候选补推（协议 §7） |
 | WAL 卷备份不完整 | `docs/DEPLOY.md` 指明 `.backup`/`VACUUM INTO`/停机拷贝；TLS 走 Caddy 叠加（强推荐） |
+| 账号切换污染（旧账号本地数据推入新账号） | 协议 §3：切换账号 → 归档 `data-<old_user>.json` + 清空本地 DB + 游标归零 → 重走首登流程（绝不推送切换前实体） |
 | reqwest 引入 tokio → 客户端体积/打包 | rustls（去 openssl）；release `strip` 已有；体积回归抽查 |
 | 无头渲染在无 GPU CI 不可用 | 渲染测试运行时探测 renderer 失败即跳过并打印提示（保证 `cargo test` 到处绿） |
 | 图标清单漏加导致静默不渲染 | `tests/icons.rs` 遍历全部引用枚举，缺失即失败 |

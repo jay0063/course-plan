@@ -1,7 +1,8 @@
-# CoursePlan 同步协议 v1.1（冻结真源）
+# CoursePlan 同步协议 v1.2（冻结真源）
 
-> 状态: Gate 0 修复稿（Oracle 复评 attempt 2 中）。
-> v1.1 相对 v1 的变更（Gate 0 评审修复）: 本地时间戳单调规则；统一 apply（pull 与 push `overridden` 同一路径，修正「原样覆盖」丢更新）；游标按账号隔离；推送批次上限；单写者契约；首登三策略细化（探针 + 真正覆盖语义）；checkin 合并覆盖 overridden 路径；服务端读快照保证；备份/缓存说明。
+> 状态: Gate 0 已闭环（Oracle attempt 1: accept-with-fixes → v1.1；attempt 2: accept-with-fixes → v1.2，R1-R3 均为机械应用评审指定修复，不再复评）。
+> v1.2 变更（复评修复）: R1 账号切换本地数据归档+清空；R2 Ack 仅在持久化后回出、sync.json 由 UI 线程写；R3 水位推进取「轮内最小本地改动戳」下限；超前台设备出站戳收敛上限；§6-3c 重戳基准改为 `max(now, server_time+1)`。
+> v1.1 变更: 时间戳单调规则；统一 apply；游标按账号隔离；推送批次上限；单写者契约；首登三策略细化；checkin 合并覆盖 overridden 路径；服务端读快照保证。
 
 ## 1. 模型
 
@@ -13,7 +14,7 @@
 
 ## 2. 时间戳与冲突规则（LWW）
 
-### 2.1 本地修改的时间戳（单调规则，v1.1 修正）
+### 2.1 本地修改的时间戳（单调规则）
 
 ```
 本地修改实体 E 时：
@@ -24,8 +25,8 @@
 
 三个上限分别保证：
 1. `now_ms` — 正常时钟下的常规取值；
-2. `watermark + 1` — 即使本地时钟回拨，新改动也**必然**满足推送候选条件 `ts >= watermark`（原 v1 的 `ts > watermark` 在回拨+恰等/更低时会永久漏推，已修正为 `>=` 候选 + `+1` 戳）；
-3. `E.updated_at + 1` — 本地改动**永远严格压过本地基线**。否则会出现：本地基线是别台设备被 clamp 的未来戳（如 `now+5min`），本地编辑只用 `now+ε` 会被服务端判负（`overridden`）并回滚本地，静默丢编辑。
+2. `watermark + 1` — 即使本地时钟回拨，新改动也**必然**满足推送候选条件 `ts >= watermark`；
+3. `E.updated_at + 1` — 本地改动**永远严格压过本地基线**（防止基线是别台设备被 clamp 的未来戳时，本地编辑被判负并静默回滚）。
 
 ### 2.2 合并谓词
 
@@ -36,9 +37,9 @@ wins(incoming, existing) = incoming.updated_at > existing.updated_at   // 严格
 
 ### 2.3 服务端 clamp
 
-写入前 `updated_at = min(incoming.updated_at, server_now_ms + 300_000)`，防坏时钟污染。clamp 只压低时间戳、不改变内容裁决次序的语义；被 clamp 的本地实体保持候选（§5），后续轮次幂等重推直至服务端时钟越过边界。
+写入前 `updated_at = min(incoming.updated_at, server_now_ms + 300_000)`（`sync-proto::clamp_updated_at`）。clamp 只压低存储时间戳；被压低的本地实体保持候选（§5），后续轮次幂等重推直至服务端时钟越过边界。
 
-### 2.4 统一 apply（v1.1 修正）
+### 2.4 统一 apply
 
 **服务端下发的一切变更**（pull 批次 + push `overridden` 列表）一律经过同一个函数落到本地：
 
@@ -50,19 +51,21 @@ apply_remote(local_latest_version, incoming_change):
   checkin: 见 §7
 ```
 
-- 修正动机（v1）：若 pull 直接「原样覆盖」，任何发生在 push/pull 窗口内的新鲜本地编辑会被旧快照回滚。走 `wins` 后：稳定的远端版本照常落地（服务端已裁决过它相对自己持版本的胜负），只有「比远端更新」的本地编辑受保护并自动补推。
+- 走 `wins` 后：稳定的远端版本照常落地（服务端已裁决过它相对自己持版本的胜负），只有「比远端更新」的本地编辑受保护并自动补推。
 - 本地胜利的实体不会丢：其 `ts >= watermark + 1`（§2.1 不变量）→ 下一轮必为候选。
 - `incoming.deleted=true` 且获胜 → 应用为本地墓碑；失败则忽略。
 
-### 2.5 回拨/前跳的行为
+### 2.5 回拨/前跳的行为（含出站上限，v1.2）
 
-- **回拨**：不丢改（§2.1）；代价是期间推送可能重复——幂等，无正确性损失。
-- **前跳（本地时钟超前）**：本地戳超前 → 每次同步都会重推（churn）直到真实时间越过；服务端始终 clamp；内容收敛，仅带宽浪费。接受此代价（v1 不为时钟同步增加复杂度）。
+- **回拨**：不丢改（§2.1）；期间推送可能重复——幂等，无正确性损失。
+- **前跳（本地时钟超前）**：本地戳超前 → 每次同步都会重推（churn）直到真实时间越过；服务端始终 clamp；内容收敛，仅带宽浪费。
+- **出站收敛上限（v1.2）**：客户端推送前将单条 `ts_out = min(entity.ts, last_server_time_ms + 300_000)`（本地保留原戳；只影响出站 payload）。这限制坏时钟设备能让服务端存储的戳上限，防止其长期压过其他设备的正常编辑（被 clamp 的一方仍靠 §2.1 `prev+1` 在本地反超、下轮补推）。
+- **接受的残留**：若某设备本地戳极端超前（数量级），在它被修正前，其内容在服务端持续占优；其他设备的新编辑本地不丢，但在该设备修正前可能无法传播给第三方。属已知接受项（不做时钟同步）。
 
 ## 3. 认证与客户端凭据
 
 - `POST /api/auth/register` `{username, password}` → `200 {token, user:{id, username}}`；`409 {error:{code:"username_taken"}}`
-  - 校验：username 2–32 字符、无空白/控制字符，唯一性 `COLLATE NOCASE`（ASCII 大小写不敏感；中文等不受影响）；password ≥ 8。
+  - 校验：username 2–32 字符、无空白/控制字符，唯一性 `COLLATE NOCASE`（ASCII 大小写不敏感）；password ≥ 8。
 - `POST /api/auth/login` → 同上；失败统一 `401 {error:{code:"invalid_credentials"}}`。
 - 密码存储：argon2id（默认参数 + 随机盐）。会话：JWT HS256 `{sub:<user_id>, exp:+30d}`；`JWT_SECRET` 缺失则启动失败。
 - 客户端凭据 `sync.json`（0600，与 `data.json` 分离）：
@@ -73,8 +76,9 @@ apply_remote(local_latest_version, incoming_change):
   "last_seq": 182, "push_watermark_ms": 1750000000000 }
 ```
 
-- **游标按账号隔离（v1.1）**：登录/切换账号时若 `(server_url, user_id)` 与已存不同 → `last_seq=0, push_watermark_ms=0` 全量重拉重推（幂等安全），杜绝旧账号游标污染新账号。
-- 旧版 `sync.json`（无 `user_id`）视为不同账号 → 游标重置，行为安全。
+- **游标按账号隔离**：登录/切换账号时若 `(server_url, user_id)` 与已存不同 → `last_seq=0, push_watermark_ms=0` 全量重拉重推（幂等安全）。
+- **账号切换（v1.2，R1）**：若 `(server_url, user_id)` 与已存不同 → **先把现有 `data.json` 归档为 `data-<old_user_id>.json`，本地 DB 清空为新账号的空白空间，绝不把切换前的实体推入新账号**；随后走 §6 首登流程。登出：仅停止同步、保留本地数据；同账号再登录 → 游标重置 → 全量重拉（幂等）。
+- 旧版 `sync.json`（无 `user_id`）视为不同账号 → 走上述切换流程（数据归档）。
 
 ## 4. 接口
 
@@ -89,8 +93,8 @@ apply_remote(local_latest_version, incoming_change):
 ```
 
 - 返回 `server_seq > since` 的记录，按 `server_seq` 升序，单批 ≤1000 条。
-- **读快照保证（v1.1）**：批次内容与 `latest_seq` 在**同一读事务**内查询，不存在「latest_seq 越过未下发记录」的窗口。
-- 客户端循环 pull 直到 `!has_more`；完成后 `last_seq = 最终响应.latest_seq`（该值 ≥ 本批最后一条的 `server_seq`）。
+- **读快照保证**：批次内容与 `latest_seq` 在**同一读事务**内查询，不存在「latest_seq 越过未下发记录」的窗口。
+- 客户端循环 pull 直到 `!has_more`；完成后 `last_seq = 最终响应.latest_seq`。
 
 ### POST /api/sync/push → `{changes:[Change]}` →
 
@@ -100,8 +104,8 @@ apply_remote(local_latest_version, incoming_change):
 ```
 
 - 服务端逐条裁决（§2.2/§2.3）：入者胜 → 写库、分配 `server_seq`、计入 `applied`；平局或败 → 计入 `overridden` 且返回**服务端权威版本**（含 `server_seq`）。
-- **批次契约（v1.1）**：单请求 ≤500 条**且** ≤3 MiB 序列化负载；超出由客户端分片循环推送（首登全量推送必然多批）。
-- `overridden` 中的条目**不特殊对待**：与 pull 变更一样走 §2.4 统一 apply（对 checkin 同样走 §7 合并），随后由候选机制决定是否补推。
+- **批次契约**：单请求 ≤500 条**且** ≤3 MiB 序列化负载；超出由客户端分片循环推送（首登全量推送必然多批）。
+- `overridden` 中的条目与 pull 变更一样走 §2.4 统一 apply（checkin 走 §7 合并），随后由候选机制决定是否补推。
 
 ### Change
 
@@ -114,16 +118,16 @@ apply_remote(local_latest_version, incoming_change):
 
 ## 5. 客户端同步引擎
 
-### 5.1 单写者契约（v1.1 冻结）
+### 5.1 单写者契约与 Ack 持久性（v1.2，R2）
 
 - `Database` **只在 UI 线程读写**（与 GPUI `App` 实体同线程）。
 - 同步 worker（专用 OS 线程 + 自带 tokio current-thread runtime + reqwest(rustls)）只做：**网络请求 + 轮次状态机**，不触碰 DB、不写文件。
-- 服务端变更经 smol channel 送 UI 事件队列；UI 线程执行统一 apply（§2.4）→ 完成后回 `Ack`；**游标与水位只有在 Ack 收到后才持久化**（`sync.json`）。崩溃语义：Ack 前崩溃 → 上轮游标保留 → 幂等重放。
-- 客户端写 `data.json` 的仍只有 UI 线程一处（沿用现有 `commit`，改为经 Mutation API 盖戳）。
+- 服务端变更经 smol channel 送 UI 事件队列；UI 线程执行统一 apply（§2.4）并**持久化 `data.json`（commit）成功之后**才回 `Ack`；worker 收到 Ack 后才推进并持久化 `sync.json` 游标。`sync.json` 由 UI 线程写（单写者延伸）。
+- 崩溃语义：Ack 前崩溃 → 游标保留上轮值 → 幂等重放；不可能出现「游标已越过、变更已丢」。
 
 ### 5.2 触发与单飞
 
-触发源：启动（已登录）、每 5 分钟、手动「立即同步」、本地 commit 后 3 秒防抖。**单飞**：任一轮次运行中，新触发只置一个 pending 标记，轮次结束立即补跑一次。
+触发源：启动（已登录）、每 5 分钟、手动「立即同步」、本地 commit 后 3 秒防抖。**单飞**：任一轮次运行中，新触发只置 pending 标记，轮次结束立即补跑一次。
 
 ### 5.3 轮次算法
 
@@ -131,42 +135,45 @@ apply_remote(local_latest_version, incoming_change):
 C0 = now_ms(); W = 已持久化的 push_watermark_ms
 候选 = 本地全部实体(含墓碑) where updated_at >= W，按 ts 升序
 for 批次 in 候选分片(≤500条 且 ≤3MiB):
-    POST /push → 批次内 applied/overridden 立即经统一 apply 落地（UI ack）
-loop: GET /pull?since=last_seq … 直到 !has_more，每批统一 apply（UI ack）
+    POST /push （ts_out 按 §2.5 出站上限收敛）
+    → 批次内 applied/overridden 经统一 apply 落地（UI 持久化后 ack）
+loop: GET /pull?since=last_seq … 直到 !has_more，每批统一 apply（同上）
 成功结束:
     last_seq   = 最终 latest_seq
-    watermark  = min(C0, 最终 server_time_ms)    // v1.1：防止前跳时钟把水位钉在远方
+    watermark  = min(C0, 最终 server_time_ms, 本轮最小本地改动戳 min_mut_ts)   // v1.2，R3
+        // 轮内时钟回拨产生的新编辑戳为 W_old+1，可能 < C0；取下限保证其恒在候选(>=)
+        // 本轮无本地改动时 min_mut_ts 可省略
 失败:
     游标/水位不动（幂等）; 退避 5s → 15s → 60s → 300s；401 → AuthFailed 停自动轮询
 ```
 
 - 不变量：任何本地改动 `ts >= watermark + 1`（§2.1）→ 永不被轮次边界漏掉。
-- 轮次中产生的新编辑即使错过本轮候选分片，也满足不变量 → 下轮补推。
+- `min_mut_ts` 由 Mutation API 在轮内记录（worker 向 UI 声明本轮开始时刻即可收集）。
 
 ### 5.4 状态事件（worker → UI）
 
 `Idle{last_sync}` / `Syncing{progress}` / `Offline` / `Error{msg}` / `AuthFailed` / `LoggedOut`；另有 `Probe{counts_by_kind}` 供首登对话框（§6）。
 
-## 6. 首次登录策略（v1.1 细化）
+## 6. 首次登录策略
 
-登录成功后先做 **探针 pull（since=0，只统计不应用）**，拿 `counts_by_kind + latest_seq + server_time_ms`：
+登录成功后先做 **探针 pull（since=0，只统计不应用）**，拿 `counts_by_kind + latest_seq + server_time_ms`（账号切换已按 §3 归档清空）：
 
 1. **服务端为空** → 全量 push 本地（watermark=0 天然全量；分片）。
 2. **本地为空（或全新安装）** → `last_seq` 起点 0 全量 pull；`watermark = server_time_ms`。
 3. **双方皆非空** → 对话框三选一：
    - **合并（推荐）**：按游标 0 全量 pull 并统一 apply（LWW），再全量 push 全部本地候选（含仅在本地存在的实体与墓碑）。
    - **云端覆盖本地**：丢弃本地未同步数据——**不做软删、不推任何墓碑**；本地 DB 直接替换为探针/全量 pull 快照，`last_seq = latest_seq`，`watermark = server_time_ms`。（语义 = 放弃本地，不是删除云端。）
-   - **本地覆盖云端**：先探针结果建立服务端 id 集合：
-     1. 文件夹：本地全部实体**重戳**为递增的 `now` 序列（保证全部严格获胜）；
+   - **本地覆盖云端**：先以探针结果建立服务端 id 集合：
+     1. 本地全部实体**重戳**为递增的 `max(now_ms, server_time_ms + 1)` 序列（v1.2，R5：压过服务端当前已知戳）；
      2. 对「仅存在于服务端」的 id 推送墓碑（`deleted=true, ts=now`）；
      3. 全量分片 push。
-     → 效果：同 id 实体本地版本获胜，服务端独有实体被删。对话框文案明确说明「将删除云端独有数据」。
+     → 效果：同 id 实体本地版本获胜，服务端独有实体被删。对话框文案明确说明「将删除云端独有数据」。中途失败幂等可重试（重戳与重推均安全）。
 
 任何选择完成后进入常规循环（§5）。
 
 ## 7. checkin.history 合并（统一 apply 内，覆盖 pull 与 overridden 两路径）
 
-`history` 为 `"YYYY-MM-DD" -> bool` map（false = 显式取消打卡）。**所有** incoming checkin 走同一合并（v1.1 修正：原修订只覆盖 pull 路径，overridden 路径会丢打卡）：
+`history` 为 `"YYYY-MM-DD" -> bool` map（false = 显式取消打卡）。**所有** incoming checkin 走同一合并：
 
 ```
 apply_remote_checkin(local L, incoming R):
@@ -181,7 +188,7 @@ apply_remote_checkin(local L, incoming R):
   return out
 ```
 
-- 收敛性：每次 bump 严格高于双方；推送后服务端 clamp 可能压低 → 保持候选按 §5 重试，直至服务端时钟越过 clamp 边界；并发方为有限设备数，每次冲突至少固化一个 key，实测由随机化收敛测试（PLAN §6）兜底。
+- 收敛性：每次 bump 严格高于双方；推送后服务端 clamp 可能压低 → 保持候选按 §5 重试，直至服务端时钟越过 clamp 边界；并发方为有限设备数，每次冲突至少固化一个 key；由随机化收敛测试 + 确定性时钟注入（PLAN §6）兜底。
 - 服务端对此毫无感知（payload 不透明，kind 无关）。
 
 ## 8. 服务端存储（SQLite）
@@ -209,8 +216,8 @@ CREATE INDEX idx_entities_seq ON entities(account_id, server_seq);
 ```
 
 - sqlx + SQLite：`journal_mode=WAL`、`busy_timeout=5s`、`foreign_keys=ON`；迁移内嵌 `sqlx::migrate!`。
-- push 写路径在**单事务**内完成裁决 + `seq_counter` 递增 + 行写入（`UPDATE users SET seq_counter = seq_counter + n`）；pull 批次与 `latest_seq` 同一读事务（§4）。
-- 请求上限：body 4 MiB（axum 默认需显式放宽到 4 MiB）；单条 payload ≤256 KiB；单批 ≤500 条。
+- push 写路径在**单事务**内完成裁决 + `seq_counter` 递增 + 行写入；pull 批次与 `latest_seq` 同一读事务（§4）。
+- 请求上限：body 4 MiB；单条 payload ≤256 KiB；单批 ≤500 条。
 - 备份（写入 `docs/DEPLOY.md`）：WAL 模式下**禁止**裸拷 `courseplan.db`；用 `sqlite3 courseplan.db ".backup /backup/x.db"` / `VACUUM INTO` 或停机拷贝。
 - 错误码：`invalid_credentials` `username_taken` `invalid_request` `unauthorized` `payload_too_large` `internal`（统一 `{error:{code,message}}`）。
 
@@ -219,13 +226,13 @@ CREATE INDEX idx_entities_seq ON entities(account_id, server_seq);
 - 一切删除 → 本地软删 + 推送墓碑；读取一律过滤墓碑。
 - 「清空全部数据」→ 全量盖墓碑并推送（其他设备随之清空）。
 - 「载入示例数据」→ 普通新增实体推送。
-- 已知且接受的 LWW 特性（v1.1 明示）：**离线编辑可以复活被别处删除的实体**（编辑的 ts 更大即获胜）。这是 LWW 的正确行为，非 bug。
+- 已知且接受的 LWW 特性：**离线编辑可以复活被别处删除的实体**（编辑的 ts 更大即获胜）。LWW 的正确行为，非 bug。
 - 「云端覆盖本地」（§6-3b）不产生墓碑；「本地覆盖云端」产生针对服务端独有 id 的墓碑。
 - 墓碑 GC 与空间回收：v1 不做（文档声明）。
 
 ## 10. 兼容性
 
 - 旧 `data.json` 无 `updated_at`/`deleted_at` → `serde(default)`：`updated_at=0`、`deleted_at=None`；首登后自然全量推送。
-- 旧 `Reminder.notified_for` 字段：读取时迁移进 `runtime_state.json`、写回时不再输出（避免每次写盘产出该字段）。
+- 旧 `Reminder.notified_for` 字段：读取时迁移进 `runtime_state.json`、写回时不再输出。
 - 客户端遇未知 `kind`：跳过并记录日志，不崩溃。
-- 旧 `sync.json`：见 §3（游标重置）。
+- 旧 `sync.json`：见 §3（按账号切换流程处理，数据归档）。
