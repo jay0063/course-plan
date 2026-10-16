@@ -1,0 +1,11 @@
+#!/bin/sh
+# AppRun entry point for the AppImage bundle.
+# Resolves the AppDir from the running binary so the app never depends on $PWD.
+set -eu
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+export PATH="${HERE}:${PATH}"
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+exec "${HERE}/usr/bin/course-plan" "$@"

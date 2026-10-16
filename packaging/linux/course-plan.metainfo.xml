@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>course-plan</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>课程计划</name>
+  <summary>小学课程管理计划</summary>
+  <description>
+    <p>
+      面向小学家庭的一站式课程管理工具：统一管理学校课程与补习课程，
+      自动生成每周计划表，支持日程安排、到期提醒、备忘笔记与每日打卡。
+    </p>
+    <ul>
+      <li>学校课程与补习课程分类管理，彩色标识</li>
+      <li>每周计划表网格视图，实时显示今天进行中的课程</li>
+      <li>日程安排与到期提醒，到点弹出系统通知</li>
+      <li>打卡任务看板，含连续天数与完成率统计</li>
+      <li>备忘笔记，支持置顶与颜色标记</li>
+      <li>数据全部保存在本地，不联网</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">course-plan.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+    <category>Education</category>
+  </categories>
+  <url type="homepage">https://github.com/your-org/course-plan</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-10"/>
+  </releases>
+</component>

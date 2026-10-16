@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=课程计划
+Name[en]=CoursePlan
+Comment=小学课程管理计划：课程、计划表、日程提醒、备忘与打卡
+Comment[en]=Primary school course planner: courses, timetable, reminders, memos and check-ins
+Exec=course-plan
+Icon=course-plan
+Terminal=false
+Categories=Utility;Education;Office;
+Keywords=课程;课表;小学;计划;打卡;course;schedule;
+StartupWMClass=course-plan
+StartupNotify=true
