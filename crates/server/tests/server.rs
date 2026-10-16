@@ -544,6 +544,70 @@ async fn push_batch_and_payload_limits() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn push_rejects_live_entity_without_payload() {
+    let server = start_server().await;
+    let client = Client::new();
+    let auth = register(&client, &server.base, "no-payload", "password123").await;
+    let token = auth.token;
+
+    // 活跃实体缺 payload → 整批 400 invalid_request
+    let mut live_without_payload = change(EntityKind::Course, "c1", 1_000, false);
+    live_without_payload.payload = None;
+    let response = push(&client, &server.base, &token, vec![live_without_payload]).await;
+    let (status, code) = error_code(response).await;
+    assert_eq!(status, 400);
+    assert_eq!(code, ErrorCode::InvalidRequest);
+
+    // 被拒批次原子地不落库
+    assert!(
+        pull(&client, &server.base, &token, 0)
+            .await
+            .changes
+            .is_empty(),
+        "rejected batch must not persist anything"
+    );
+
+    // tombstone（deleted=true）无 payload 仍然合法
+    let tombstone = change(EntityKind::Course, "c2", 1_000, true);
+    let ok = push_ok(&client, &server.base, &token, vec![tombstone]).await;
+    assert_eq!(ok.applied.len(), 1);
+
+    let page = pull(&client, &server.base, &token, 0).await;
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!(page.changes[0].id, "c2");
+    assert!(page.changes[0].deleted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pull_rejects_invalid_since() {
+    let server = start_server().await;
+    let client = Client::new();
+    let auth = register(&client, &server.base, "bad-since", "password123").await;
+
+    // 非 u64 / u64 溢出 / 负值 → 统一 400 invalid_request（JSON 错误体）
+    for raw in ["abc", "99999999999999999999", "-1"] {
+        let response = client
+            .get(format!("{}/api/sync/pull?since={raw}", server.base))
+            .bearer_auth(&auth.token)
+            .send()
+            .await
+            .expect("pull request failed");
+        let (status, code) = error_code(response).await;
+        assert_eq!(status, 400, "since={raw} must be rejected");
+        assert_eq!(code, ErrorCode::InvalidRequest, "since={raw}");
+    }
+
+    // 缺省 since → 0（合法）
+    let response = client
+        .get(format!("{}/api/sync/pull", server.base))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("pull request failed");
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_scripted_clients_converge() {
     let server = start_server().await;
     let client = Client::new();

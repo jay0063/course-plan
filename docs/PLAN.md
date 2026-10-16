@@ -1,7 +1,7 @@
 # CoursePlan 重构 + 同步后端 — 实施计划
 
-> 状态: Gate 0 修复稿 v1.1（Oracle 复评 attempt 2 中）· 日期: 2026-10-17 · 基线 commit: `7700204`
-> v1.1 变更: 折入 Gate 0 评审 10 项修复（协议见 `docs/SYNC-PROTOCOL.md` v1.1）；Gate 1 证据改为脚本化 HTTP 客户端；新增随机化收敛测试。
+> 状态: Phase 1 完成、Gate 1 修复中（协议 v1.2）· 日期: 2026-10-17 · 基线 commit: `7700204`
+> 变更记录: 协议 v1.1→v1.2 折入 Gate 0 复评 R1-R3；Gate 1 修复项（分页游标规格化、live-null-payload 拒绝、since 解析、BEGIN IMMEDIATE 事务守卫、镜像 sqlite3、容器绑定地址参数、CI 触发路径）。
 
 ## 1. 目标
 
@@ -141,7 +141,7 @@ course-plan/
 - **crate 名**: `course-plan`(客户端) / `course-plan-sync-proto` / `course-plan-server`
 - **服务端二进制名**: `course-plan-server`；端口 `PORT=8080`；数据目录 `DATA_DIR=/data`（DB `/data/courseplan.db`）；`JWT_SECRET` 必填；`RUST_LOG` 默认 `info`
 - **健康检查**: `GET /api/health` → `{"status":"ok","version":"…"}`（无需鉴权）
-- **线协议**: 以 `docs/SYNC-PROTOCOL.md` (v1.1) 为唯一真源；DTO 由 `sync-proto` 提供，客户端与服务端禁止各自复制一份
+- **线协议**: 以 `docs/SYNC-PROTOCOL.md` (v1.2) 为唯一真源；DTO 由 `sync-proto` 提供，客户端与服务端禁止各自复制一份
 - **单写者契约**: `Database` 只在 UI 线程读写；sync worker 只做网络+状态机；服务端变更经 channel 回 UI 线程统一 apply；游标/水位仅在 UI Ack 后持久化
 - **统一 apply**: pull 应用与 push `overridden` 应用走同一函数（wins 规则 + checkin 合并）；任何路径不得「原样覆盖本地」
 - **图标**: 全部图标引用走 `src/assets.rs` 的 `AppAssets`；新增图标必须同步进该清单（有测试兜底）

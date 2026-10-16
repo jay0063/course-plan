@@ -4,10 +4,16 @@ on:
   push:
     paths:
       - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".dockerignore"
       - ".github/workflows/server.yml"
   pull_request:
     paths:
       - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".dockerignore"
       - ".github/workflows/server.yml"
 
 env:

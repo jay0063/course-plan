@@ -20,6 +20,10 @@ packaging/
 docs/
 .github/
 
+# 测试与本地工具元数据（镜像构建不需要；勿排除 src/ crates/ deploy/）
+tests/
+.commandcode/
+
 # 本地环境与凭据（切勿进镜像）
 .env
 .env.*

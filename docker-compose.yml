@@ -13,7 +13,8 @@ services:
       dockerfile: crates/server/Dockerfile
     image: courseplan-server:dev
     ports:
-      - "8080:8080"
+      # 默认监听所有网卡；启用 TLS 叠加时应在 .env 设 COURSEPLAN_BIND=127.0.0.1
+      - "${COURSEPLAN_BIND:-0.0.0.0}:8080:8080"
     volumes:
       - courseplan-data:/data
     environment:

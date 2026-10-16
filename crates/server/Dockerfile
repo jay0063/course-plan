@@ -46,8 +46,9 @@ FROM debian:bookworm-slim AS runtime
 
 # ca-certificates：出站 TLS（如后续接入外部依赖）
 # curl：仅用于容器 HEALTHCHECK
+# sqlite3：DEPLOY.md §5 的容器内在线热备 / VACUUM INTO 命令依赖该 CLI
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid 10001 --home-dir /home/app --create-home --shell /usr/sbin/nologin app

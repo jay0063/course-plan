@@ -1,12 +1,11 @@
 //! 同步接口：`GET /api/sync/pull` 与 `POST /api/sync/push`（协议 §4）。
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{RawQuery, State};
 use course_plan_sync_proto::{
     Change, EntityKind, ErrorCode, MAX_PAYLOAD_BYTES, MAX_PULL_BATCH, MAX_PUSH_BYTES,
     MAX_PUSH_CHANGES, PullResponse, PushAck, PushRequest, PushResponse, clamp_updated_at, wins,
 };
-use serde::Deserialize;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
@@ -16,10 +15,31 @@ use crate::error::AppError;
 use crate::json::AppJson;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct PullQuery {
-    #[serde(default)]
-    pub since: u64,
+/// 解析 `?since=<u64>`（协议 §4）：缺失 ⇒ 0；非 u64 或溢出 ⇒ `400 invalid_request`。
+///
+/// 手动解析原始查询串，而非依赖 axum 的 `Query` 提取器——后者在拒绝时会返回
+/// 纯文本响应，绕过协议规定的统一错误 JSON。
+fn parse_since(raw: Option<&str>) -> Result<u64, AppError> {
+    let Some(raw) = raw else {
+        return Ok(0);
+    };
+
+    let mut since = None;
+    for pair in raw.split('&') {
+        if let Some(value) = pair.strip_prefix("since=") {
+            since = Some(value);
+        }
+    }
+
+    match since {
+        None => Ok(0),
+        Some(value) => value.parse::<u64>().map_err(|_| {
+            AppError::new(
+                ErrorCode::InvalidRequest,
+                format!("invalid since parameter: {value:?} (expected u64)"),
+            )
+        }),
+    }
 }
 
 /// `GET /api/sync/pull?since=<u64>`
@@ -28,8 +48,10 @@ pub struct PullQuery {
 pub async fn pull(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<PullQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<PullResponse>, AppError> {
+    let since = parse_since(raw.as_deref())?;
+
     let mut tx = state.pool.begin().await?;
 
     let rows = sqlx::query(
@@ -38,7 +60,8 @@ pub async fn pull(
          ORDER BY server_seq ASC LIMIT ?",
     )
     .bind(user.id)
-    .bind(query.since as i64)
+    // server_seq 以 i64 存储，超出 i64::MAX 的 since 不可能匹配任何行：饱和而非回绕。
+    .bind(since.min(i64::MAX as u64) as i64)
     .bind(MAX_PULL_BATCH as i64 + 1)
     .fetch_all(&mut *tx)
     .await?;
@@ -95,6 +118,18 @@ pub async fn push(
     }
 
     for change in &body.changes {
+        // 活跃实体必须携带 payload；否则整批拒绝（在写事务之前校验，保证原子性）。
+        if !change.deleted && change.payload.is_none() {
+            return Err(AppError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "live entity without payload: {}/{}",
+                    change.kind.as_str(),
+                    change.id
+                ),
+            ));
+        }
+
         if let Some(payload) = &change.payload {
             let size = serde_json::to_vec(payload)
                 .map_err(|error| {
@@ -116,22 +151,13 @@ pub async fn push(
     let now = now_ms();
 
     // 单写者契约：用 BEGIN IMMEDIATE 直接取得写锁，避免 SQLite 延迟事务升级死锁。
-    let mut conn = state.pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    // 采用 sqlx 的 drop-guard 事务：任何提前返回（含 commit 失败）都会触发 Drop 回滚，
+    // 连接不会以「事务未关闭」的状态归还连接池。
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let response = apply_push(&mut tx, user.id, &body.changes, now).await?;
+    tx.commit().await?;
 
-    match apply_push(&mut conn, user.id, &body.changes, now).await {
-        Ok(response) => {
-            if let Err(error) = sqlx::query("COMMIT").execute(&mut *conn).await {
-                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-                return Err(error.into());
-            }
-            Ok(Json(response))
-        }
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            Err(error)
-        }
-    }
+    Ok(Json(response))
 }
 
 async fn apply_push(

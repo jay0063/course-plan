@@ -1,3 +1,6 @@
 /target
 /dist
 .slim/deepwork/
+
+# TLS 叠加：真实 Caddyfile 由用户从 deploy/Caddyfile.example 复制生成
+deploy/Caddyfile

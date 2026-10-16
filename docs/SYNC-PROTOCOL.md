@@ -39,6 +39,8 @@ wins(incoming, existing) = incoming.updated_at > existing.updated_at   // 严格
 
 写入前 `updated_at = min(incoming.updated_at, server_now_ms + 300_000)`（`sync-proto::clamp_updated_at`）。clamp 只压低存储时间戳；被压低的本地实体保持候选（§5），后续轮次幂等重推直至服务端时钟越过边界。
 
+**裁决顺序（与实现一致，客户端不得自行预判）**：先对入站值 clamp，再与**服务端存储值**比较：`wins(clamp_updated_at(incoming), stored)`。客户端拿原始戳自行比较可能得出与裁决不同的结论。
+
 ### 2.4 统一 apply
 
 **服务端下发的一切变更**（pull 批次 + push `overridden` 列表）一律经过同一个函数落到本地：
@@ -94,7 +96,8 @@ apply_remote(local_latest_version, incoming_change):
 
 - 返回 `server_seq > since` 的记录，按 `server_seq` 升序，单批 ≤1000 条。
 - **读快照保证**：批次内容与 `latest_seq` 在**同一读事务**内查询，不存在「latest_seq 越过未下发记录」的窗口。
-- 客户端循环 pull 直到 `!has_more`；完成后 `last_seq = 最终响应.latest_seq`。
+- **分页游标规则（实现与测试一致，客户端必须照此）**：中间页下一次请求的 `since` 取本批**最后一条的 `server_seq`**（不是 `latest_seq`——后者是账号全量最大值，用它做中间页游标会在 >1000 条时跳行）；`has_more=false` 之后才 `last_seq = latest_seq`。
+- `since` 必须为合法 u64：非法值或溢出 → `400 invalid_request`（统一错误 JSON）。
 
 ### POST /api/sync/push → `{changes:[Change]}` →
 
@@ -104,6 +107,7 @@ apply_remote(local_latest_version, incoming_change):
 ```
 
 - 服务端逐条裁决（§2.2/§2.3）：入者胜 → 写库、分配 `server_seq`、计入 `applied`；平局或败 → 计入 `overridden` 且返回**服务端权威版本**（含 `server_seq`）。
+- **校验**：`deleted=false` 的变更必须携带非空 `payload`（服务端拒绝，`400 invalid_request`）；同批内 `server_seq` 按请求顺序递增分配（同 `updated_at` 平局按批内顺序确定性裁决）。
 - **批次契约**：单请求 ≤500 条**且** ≤3 MiB 序列化负载；超出由客户端分片循环推送（首登全量推送必然多批）。
 - `overridden` 中的条目与 pull 变更一样走 §2.4 统一 apply（checkin 走 §7 合并），随后由候选机制决定是否补推。
 

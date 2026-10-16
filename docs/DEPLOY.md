@@ -40,9 +40,10 @@ curl -fsS http://127.0.0.1:8080/api/health
 | `PORT` | 否 | `8080` | 服务端监听端口（容器内）。 |
 | `DATA_DIR` | 否 | `/data` | 数据目录（容器内），SQLite 库位于 `${DATA_DIR}/courseplan.db`。compose 已挂载命名卷 `courseplan-data` 到 `/data`。 |
 | `RUST_LOG` | 否 | `info` | 日志级别：`error` / `warn` / `info` / `debug` / `trace`。 |
+| `COURSEPLAN_BIND` | 否 | `0.0.0.0` | 宿主机绑定地址（`docker-compose.yml` 的 `ports` 映射）。默认监听所有网卡；启用 TLS 叠加时建议设为 `127.0.0.1`（见 §7）。 |
 | `COURSEPLAN_DOMAIN` | TLS 时需要 | — | 域名（仅 `docker-compose.tls.yml` 使用），Caddy 据此申请证书。 |
 
-> `.env` 中已包含 `JWT_SECRET`、`COURSEPLAN_DOMAIN`、`RUST_LOG` 三项。
+> `.env` 中已包含 `JWT_SECRET`、`COURSEPLAN_BIND`、`COURSEPLAN_DOMAIN`、`RUST_LOG` 四项。
 > Compose 对必填项使用了 `${JWT_SECRET:?...}` 语法——未设置时会直接报错并提示查看 `.env.example`。
 
 ## 4. 数据卷与持久化
@@ -127,12 +128,19 @@ docker compose logs -f server   # 观察迁移与启动日志
 > **明文 HTTP 会以明文传输账号密码与 JWT**——在公网环境下形同裸奔。
 > 生产部署**务必**叠加 TLS。仓库提供 Caddy 自动 HTTPS 叠加。
 
+> ⚠️ **叠加 TLS 后，务必在 `.env` 设 `COURSEPLAN_BIND=127.0.0.1`**（或用防火墙封禁 8080）。
+> 否则服务端的 8080 明文端口仍会与 HTTPS 并存对外可达，攻击者可直接绕过 Caddy 用明文连接。
+
 ```bash
 # 1) 准备 Caddyfile（仓库内提供示例）
 cp deploy/Caddyfile.example deploy/Caddyfile
+#    ⚠️ 必须先执行上面的复制步骤：compose 把 ./deploy/Caddyfile 绑定挂载到容器内。
+#    若该文件不存在，Docker 会在宿主机创建一个同名**目录**，导致 Caddy 以
+#    「is a directory / not a file」等令人困惑的错误启动失败。
 
-# 2) 在 .env 中填写域名
+# 2) 在 .env 中填写域名与绑定地址
 #    COURSEPLAN_DOMAIN=course.example.com   （需已解析到本机，且放通 80/443）
+#    COURSEPLAN_BIND=127.0.0.1               （避免明文 8080 端口直接暴露）
 
 # 3) 启动（基础 + TLS 叠加）
 docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
