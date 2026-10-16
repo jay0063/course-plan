@@ -754,7 +754,11 @@ impl App {
                 self.db.bump_all_stamps(base);
                 self.db.stamp_floor_ms = base;
                 let local_ids = self.db.all_entity_ids();
-                FirstLoginPolicy::LocalWins { local_ids }
+                // 把同一基址一并交给核心，使其为服务端独有 id 铸造的墓碑也压过服务端（§6-3c）。
+                FirstLoginPolicy::LocalWins {
+                    local_ids,
+                    base_ms: base,
+                }
             }
         };
         if let Err(err) = store::save(&self.db) {

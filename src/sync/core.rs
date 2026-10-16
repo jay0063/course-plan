@@ -112,8 +112,13 @@ pub enum FirstLoginPolicy {
     /// 云端覆盖本地：丢弃本地未同步数据（不产生墓碑）。
     CloudWins,
     /// 本地覆盖云端：重戳本地（UI 已做）+ 为服务端独有 id 推墓碑 + 全量 push。
+    ///
+    /// `base_ms` 必须与 UI 调用 `Database::bump_all_stamps(base_ms)` 时所用基址一致
+    /// （`max(now_ms, server_time_ms + 1)`）；服务端独有 id 的墓碑也以该基址重戳，
+    /// 否则在服务端时钟领先（或存储戳被未来 clamp）时墓碑会输给既有实体（§6-3c）。
     LocalWins {
         local_ids: Vec<(EntityKind, String)>,
+        base_ms: i64,
     },
 }
 
@@ -227,6 +232,8 @@ enum Mode {
     CloudWins,
     LocalWins {
         server_only: Vec<(EntityKind, String)>,
+        /// 与服务端独有墓碑共用的重戳基址（见 [`FirstLoginPolicy::LocalWins`]）。
+        base_ms: i64,
     },
 }
 
@@ -586,13 +593,18 @@ impl<A: SyncApi> SyncCore<A> {
             }
         };
         let mut all = changes;
-        if let Mode::LocalWins { server_only } = &mode {
-            let now = (self.clock)();
+        if let Mode::LocalWins {
+            server_only,
+            base_ms,
+        } = &mode
+        {
+            // 墓碑用与本地重戳相同的基址（而非原始 now）：服务端时钟领先时 raw now
+            // 会输给既有实体，导致「本地覆盖云端」失效（§6-3c）。
             for (kind, id) in server_only {
                 all.push(Change {
                     kind: *kind,
                     id: id.clone(),
-                    updated_at: now,
+                    updated_at: *base_ms,
                     deleted: true,
                     device_id: String::new(),
                     payload: None,
@@ -749,14 +761,17 @@ impl<A: SyncApi> SyncCore<A> {
         let mode = match policy {
             FirstLoginPolicy::Merge => Mode::Merge,
             FirstLoginPolicy::CloudWins => Mode::CloudWins,
-            FirstLoginPolicy::LocalWins { local_ids } => {
+            FirstLoginPolicy::LocalWins { local_ids, base_ms } => {
                 let server_only = probe
                     .all_ids
                     .iter()
                     .filter(|entry| !local_ids.contains(entry))
                     .cloned()
                     .collect();
-                Mode::LocalWins { server_only }
+                Mode::LocalWins {
+                    server_only,
+                    base_ms,
+                }
             }
         };
         self.start_round(mode, events);
@@ -1041,8 +1056,14 @@ fn next_cursor(resp: &PullResponse, since: u64) -> Option<u64> {
     Some(cursor)
 }
 
-/// 丢弃单条 payload 超过 [`MAX_PAYLOAD_BYTES`] 的变更（服务端会 413，且除非跳过否则
-/// 每轮重推会陷入无限退避）。每轮至多发一条 [`SyncEvent::Warning`]，点名首个超限实体（§4）。
+/// 处理单条 payload 超过 [`MAX_PAYLOAD_BYTES`] 的变更（服务端会 413，且除非处理否则
+/// 每轮重推会陷入无限退避）：
+///
+/// - **存活实体**：跳过（无法安全传输），每轮至多发一条 [`SyncEvent::Warning`] 点名首个
+///   超限实体（§4）。
+/// - **墓碑**（`deleted == true`）：剥掉 payload 后**保留**——服务端接受墓碑的 null
+///   payload（非存活实体不受 payload 大小限制），删除语义仍能传播；否则一个先同步、
+///   后被本地撑大再删除的实体会永远无法把删除送达服务端（§4）。
 fn drop_oversize(changes: Vec<Change>, events: &mut Vec<SyncEvent>) -> Vec<Change> {
     let mut kept = Vec::with_capacity(changes.len());
     let mut first_offender: Option<(EntityKind, String, usize)> = None;
@@ -1054,6 +1075,12 @@ fn drop_oversize(changes: Vec<Change>, events: &mut Vec<SyncEvent>) -> Vec<Chang
             .map(|bytes| bytes.len())
             .unwrap_or(0);
         if size > MAX_PAYLOAD_BYTES {
+            if change.deleted {
+                let mut stripped = change;
+                stripped.payload = None;
+                kept.push(stripped);
+                continue;
+            }
             if first_offender.is_none() {
                 first_offender = Some((change.kind, change.id.clone(), size));
             }

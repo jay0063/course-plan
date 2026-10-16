@@ -456,6 +456,43 @@ async fn oversize_payload_is_skipped_with_warning() {
     );
 }
 
+/// 超限墓碑不得被跳过：剥掉 payload 后仍须推送，删除语义才得以传播。
+#[tokio::test]
+async fn oversize_tombstone_strips_payload_but_still_pushes() {
+    let api = FakeApi::default();
+    let (_clock, clock_fn) = fake_clock(1_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+
+    let oversized_tombstone = Change {
+        kind: EntityKind::Memo,
+        id: "deleted-big".into(),
+        updated_at: 2,
+        deleted: true,
+        device_id: String::new(),
+        payload: Some(serde_json::json!({ "id": "deleted-big", "content": "x".repeat(300_000) })),
+        server_seq: None,
+    };
+
+    pump(
+        &mut core,
+        vec![SyncCommand::SyncNow],
+        &[oversized_tombstone],
+        &FirstLoginPolicy::Merge,
+    )
+    .await;
+
+    let pushed: Vec<Change> = api.pushes().into_iter().flatten().collect();
+    let tombstone = pushed
+        .iter()
+        .find(|change| change.id == "deleted-big")
+        .expect("超限墓碑应被推送，而非跳过");
+    assert!(tombstone.deleted, "应保持墓碑语义");
+    assert!(
+        tombstone.payload.is_none(),
+        "超限墓碑应剥离 payload（服务端接受 null payload）"
+    );
+}
+
 // ─────────────────────────────── 游标规则 ───────────────────────────────
 
 #[tokio::test]
@@ -697,7 +734,10 @@ async fn local_wins_tombstones_server_only_ids() {
     let need = core
         .handle(SyncCommand::FirstLoginPolicy {
             round_id,
-            policy: FirstLoginPolicy::LocalWins { local_ids },
+            policy: FirstLoginPolicy::LocalWins {
+                local_ids,
+                base_ms: 10_000,
+            },
         })
         .await;
     let round_id = need
@@ -735,6 +775,79 @@ async fn local_wins_tombstones_server_only_ids() {
     assert!(
         !tombstoned.iter().any(|(_, id)| id == "a"),
         "本地已有的 a 不应被墓碑"
+    );
+}
+
+/// 服务端时钟领先本地时：LocalWins 墓碑必须以 UI 传入的 `base_ms`（=
+/// `max(now, server_time + 1)`）重戳，而不是原始 `now`，否则会输给服务端既有实体。
+#[tokio::test]
+async fn local_wins_tombstones_use_bumped_base_when_server_ahead() {
+    let api = FakeApi::default();
+    // 探针：服务端存活 b（戳 20_000，约等于其时钟），客户端 now 仅 10_000。
+    let probe_change = {
+        let mut c = course_change("b", 20_000);
+        c.server_seq = Some(1);
+        c
+    };
+    api.push_pull(Ok(PullResponse {
+        changes: vec![probe_change],
+        latest_seq: 1,
+        has_more: false,
+        server_time_ms: 20_000,
+    }));
+
+    let (clock, clock_fn) = fake_clock(10_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+
+    let events = core
+        .handle(SyncCommand::Login {
+            server_url: "http://test".into(),
+            username: "u".into(),
+            password: "password123".into(),
+            register: false,
+        })
+        .await;
+    let round_id = events
+        .iter()
+        .find_map(|e| match e {
+            SyncEvent::ProbeResult { round_id, .. } => Some(*round_id),
+            _ => None,
+        })
+        .expect("应有探针结果");
+
+    // UI 侧基址 = max(now, server_time + 1) = 20_001（服务端时钟领先）。
+    let server_time_ms = 20_000_i64;
+    let base_ms = clock.load(Ordering::Relaxed).max(server_time_ms + 1);
+    let need = core
+        .handle(SyncCommand::FirstLoginPolicy {
+            round_id,
+            policy: FirstLoginPolicy::LocalWins {
+                local_ids: Vec::new(),
+                base_ms,
+            },
+        })
+        .await;
+    let round_id = need_round_id(&need);
+    core.handle(SyncCommand::Candidates {
+        round_id,
+        changes: Vec::new(),
+    })
+    .await;
+    core.handle(SyncCommand::AckRound { round_id, ok: true })
+        .await;
+
+    let pushed: Vec<Change> = api.pushes().into_iter().flatten().collect();
+    let tombstone = pushed
+        .iter()
+        .find(|c| c.deleted && c.id == "b")
+        .expect("应给服务端独有的 b 推墓碑");
+    assert_eq!(
+        tombstone.updated_at, base_ms,
+        "墓碑须用 UI 的 bump 基址（{base_ms}），而非原始 now（10_000）"
+    );
+    assert!(
+        tombstone.updated_at > 20_000,
+        "墓碑戳须严格大于服务端既有戳，删除才会生效"
     );
 }
 

@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use course_plan::model::{CheckIn, Course, CourseKind, Database, Memo, Reminder, Repeat};
@@ -152,6 +152,8 @@ struct Client {
     /// 若非空：在下一次 `NeedCandidates`（收集候选之后）注入一次本地编辑，
     /// 以模拟「轮次进行中本地又发生改动」，用后清零。
     inject_course: Option<(String, String)>,
+    /// 注入的客户端时钟偏移（毫秒）：负值模拟本地时钟落后服务端（用于 LocalWins 回归）。
+    clock_offset_ms: Arc<AtomicI64>,
 }
 
 fn now_real_ms() -> i64 {
@@ -168,6 +170,16 @@ fn unique_tag() -> usize {
 
 impl Client {
     fn new(server_url: &str, db: Database, policy: PolicyKind) -> Self {
+        Self::with_clock_offset(server_url, db, policy, 0)
+    }
+
+    /// 与 [`Client::new`] 相同，但把客户端时钟整体偏移 `offset_ms`（负值 = 落后服务端）。
+    fn with_clock_offset(
+        server_url: &str,
+        db: Database,
+        policy: PolicyKind,
+        offset_ms: i64,
+    ) -> Self {
         let online = Arc::new(AtomicBool::new(true));
         let api = Flaky::new(online.clone());
         let config = SyncCoreConfig {
@@ -175,7 +187,13 @@ impl Client {
             server_url: server_url.to_string(),
             ..Default::default()
         };
-        let core = SyncCore::new(api, Box::new(now_real_ms), config);
+        let clock_offset_ms = Arc::new(AtomicI64::new(offset_ms));
+        let reader = clock_offset_ms.clone();
+        let core = SyncCore::new(
+            api,
+            Box::new(move || now_real_ms() + reader.load(Ordering::Relaxed)),
+            config,
+        );
         Self {
             db,
             core,
@@ -185,7 +203,13 @@ impl Client {
             last_status: Status::LoggedOut,
             fail_next_persist: false,
             inject_course: None,
+            clock_offset_ms,
         }
+    }
+
+    /// 客户端本地时钟（含注入偏移），与核心所用时钟一致。
+    fn now_ms(&self) -> i64 {
+        now_real_ms() + self.clock_offset_ms.load(Ordering::Relaxed)
     }
 
     fn set_online(&self, online: bool) {
@@ -283,11 +307,12 @@ impl Client {
             PolicyKind::Merge => FirstLoginPolicy::Merge,
             PolicyKind::CloudWins => FirstLoginPolicy::CloudWins,
             PolicyKind::LocalWins => {
-                let base = now_real_ms().max(probe.server_time_ms.saturating_add(1));
+                let base = self.now_ms().max(probe.server_time_ms.saturating_add(1));
                 self.db.bump_all_stamps(base);
                 self.db.stamp_floor_ms = base;
                 FirstLoginPolicy::LocalWins {
                     local_ids: self.db.all_entity_ids(),
+                    base_ms: base,
                 }
             }
             PolicyKind::Auto => {
@@ -704,6 +729,98 @@ async fn edit_during_in_flight_round_is_pushed_next_round() {
     assert!(
         clients[1].db.course("inflight-new").is_some(),
         "轮内注入的编辑应在下一轮被补推给对端"
+    );
+    assert_converged(&clients, None);
+}
+
+/// R3-FIX 1：本地时钟落后服务端时，LocalWins 的服务端独有墓碑必须以
+/// `max(now, server_time + 1)` 重戳——否则墓碑输给服务端既有实体，云端实体存活。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_wins_server_clock_ahead_deletes_server_only() {
+    let server = start_server().await;
+    let mut clients = vec![
+        Client::new(&server.base, Database::default(), PolicyKind::Merge),
+        // B 本地时钟落后服务端 1 小时。
+        Client::with_clock_offset(
+            &server.base,
+            Database::default(),
+            PolicyKind::LocalWins,
+            -3_600_000,
+        ),
+    ];
+
+    // A 造云端实体（course + memo）。
+    seed_course(&mut clients[0].db, "a1", "云端A");
+    let mut memo = Memo::new();
+    memo.id = "cloud-memo".into();
+    memo.title = "云端备忘".into();
+    clients[0].db.save_memo(memo);
+    clients[0].login("lwclock", "password123", true).await;
+
+    // B 本地只有 b1，采用 LocalWins → 应把云端独有的 a1/cloud-memo 墓碑掉。
+    seed_course(&mut clients[1].db, "b1", "本地B");
+    clients[1].login("lwclock", "password123", false).await;
+
+    settle(&mut clients, 8).await;
+    assert_converged(&clients, None);
+    assert!(
+        clients[0].db.course("a1").is_none(),
+        "云端独有的 a1 应被 B 的 LocalWins 删除（墓碑须压过服务端既有戳）"
+    );
+    assert!(
+        !clients[0].db.live_memos().any(|m| m.id == "cloud-memo"),
+        "云端独有的 memo 应被删除"
+    );
+    assert!(
+        clients[0].db.course("b1").is_some(),
+        "B 的本地实体应上到云端"
+    );
+}
+
+/// R3-FIX 2：先同步、后被本地撑过 256 KiB 再删除的实体，其超限墓碑仍须送达服务端，
+/// 删除经服务端传播到对端；对端读取路径不再显示该实体。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_memo_deletion_propagates_to_peer() {
+    let server = start_server().await;
+    let mut clients = vec![
+        Client::new(&server.base, Database::default(), PolicyKind::Merge),
+        Client::new(&server.base, Database::default(), PolicyKind::Merge),
+    ];
+
+    // A 建小 memo 并同步（服务端 + B 均可见）。
+    let mut memo = Memo::new();
+    memo.id = "big".into();
+    memo.title = "小备忘".into();
+    clients[0].db.save_memo(memo);
+    clients[0].login("oversize", "password123", true).await;
+    clients[1].login("oversize", "password123", false).await;
+    settle(&mut clients, 4).await;
+    assert!(
+        clients[1].db.live_memos().any(|m| m.id == "big"),
+        "B 应先看到已同步的 memo"
+    );
+
+    // A 本地把内容撑过 256 KiB（该存活变更因超限被跳过重推），随后删除。
+    {
+        let memo = clients[0]
+            .db
+            .memos
+            .iter_mut()
+            .find(|m| m.id == "big")
+            .unwrap();
+        memo.content = "x".repeat(300_000);
+    }
+    clients[0].db.delete_memo("big");
+    clients[0].sync().await; // 超限墓碑（payload 剥离）应送达服务端
+    clients[1].sync().await; // B 拉取墓碑
+
+    assert!(
+        !clients[0].db.live_memos().any(|m| m.id == "big"),
+        "A 本地已删除"
+    );
+    assert!(
+        !clients[1].db.live_memos().any(|m| m.id == "big"),
+        "超限实体的删除应经服务端传播到对端"
     );
     assert_converged(&clients, None);
 }
