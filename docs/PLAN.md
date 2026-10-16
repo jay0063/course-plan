@@ -1,13 +1,14 @@
 # CoursePlan 重构 + 同步后端 — 实施计划
 
-> 状态: 待 Oracle 评审 (Gate 0) · 日期: 2026-10-17 · 基线 commit: `7700204`
+> 状态: Gate 0 修复稿 v1.1（Oracle 复评 attempt 2 中）· 日期: 2026-10-17 · 基线 commit: `7700204`
+> v1.1 变更: 折入 Gate 0 评审 10 项修复（协议见 `docs/SYNC-PROTOCOL.md` v1.1）；Gate 1 证据改为脚本化 HTTP 客户端；新增随机化收敛测试。
 
 ## 1. 目标
 
 1. **全面分析**现有 GPUI 桌面应用（已完成侦察，见 §3）。
 2. **产品重构**：整体设计系统重做（活力儿童向：高饱和、圆润、大触控目标、细腻动效），逐页重构 8 个视图的布局与交互。
 3. **服务端数据同步**：Rust (axum) + SQLite 单容器后端，家庭账号（用户名+密码），实体级 LWW 同步 + 墓碑删除。
-4. **容器化部署**：多阶段 Dockerfile + docker compose（含可选 Caddy TLS 叠加），文档化。
+4. **容器化部署**：多阶段 Dockerfile + docker compose（含 Caddy TLS 叠加，**强推荐**——密码与 JWT 明文传输风险），文档化。
 
 ### 冻结决策（用户确认）
 
@@ -57,9 +58,11 @@ course-plan/
 ├── src/
 │   ├── main.rs             # 薄二进制 → course_plan::run()
 │   ├── lib.rs              # pub mod 导出（供集成测试/视觉测试）
-│   ├── model.rs            # 实体 + updated_at/deleted_at  + Mutation API
-│   ├── store.rs            # 落盘 / 损坏备份 / sync.json(0600)
-│   ├── sync/               # 客户端同步引擎（后台线程 + 状态机 + 合并）
+│   ├── model.rs            # 实体 + updated_at/deleted_at + Mutation API
+│   ├── store.rs            # 落盘 / 损坏备份 / sync.json(0600) / runtime_state.json
+│   ├── sync/
+│   │   ├── core.rs         # 无 UI 可测试状态机（轮次/批次/统一 apply/退避）
+│   │   └── worker.rs       # 专用线程 + reqwest；smol channel 事件/Ack
 │   ├── assets.rs           # icon_assets! 自选图标集
 │   ├── theme.rs            # 应用主题（ThemeConfig / 颜色 & 半径定制）
 │   ├── ui/                 # 设计系统（tokens、组件：overlay/tabs/卡片按钮…）
@@ -69,7 +72,7 @@ course-plan/
 │   └── server/             # axum + sqlx(sqlite) + argon2 + jwt
 │       ├── src/ migrations/ tests/ Dockerfile
 ├── docker-compose.yml / docker-compose.tls.yml / .env.example
-├── tests/                  # 集成测试：render.rs(无头渲染+截图)、sync_e2e.rs
+├── tests/                  # 集成测试：render.rs(无头渲染+截图)、sync_e2e.rs、convergence.rs
 └── docs/                   # PLAN.md / SYNC-PROTOCOL.md / DESIGN.md / DEPLOY.md
 ```
 
@@ -81,11 +84,11 @@ course-plan/
 
 - 产出：本文件 + `docs/SYNC-PROTOCOL.md`
 - 证据：explorer 代码地图、librarian 能力报告（已入 §2）
-- **Gate 0**: Oracle 评审计划与协议（attempt 1/3）
+- **Gate 0**: Oracle 评审（attempt 1/3 完成: accept-with-fixes；10 项修复已折入 v1.1；复评 attempt 2 进行中）
 
 ### Phase 2.5 — 基建播种（orchestrator 直接做，接口封版）
 
-- workspace 化、`src/lib.rs` 转换、`crates/sync-proto` 种子（DTO + LWW 谓词 + 单测）——这三样是各泳道的共同接口，由编排者冻结
+- workspace 化、`src/lib.rs` 转换、`crates/sync-proto` 种子（DTO + LWW 谓词 + 单测，含 `server_time_ms` 字段）——这三样是各泳道的共同接口，由编排者冻结
 - 证据：`cargo test -p course-plan-sync-proto`
 
 ### Phase 1 — 基建（4 条并行泳道，文件互斥）
@@ -94,17 +97,17 @@ course-plan/
 | --- | --- | --- |
 | S（fixer） | gpui-kit 升 0.7.3；图标资产修复（`icon_assets!`）；「图标全覆盖」测试 | `Cargo.toml`(根) `Cargo.lock` `src/main.rs` `src/assets.rs` `tests/icons.rs` |
 | B1（fixer） | 服务端核心：auth + push/pull + SQLite 迁移 + 集成测试（tower oneshot） | `crates/server/{Cargo.toml,src/**,migrations/**,tests/**}` |
-| B2（fixer） | 容器化：多阶段 Dockerfile、compose（+TLS 叠加）、`.env.example`、`docs/DEPLOY.md`、CI 服务端任务 | `crates/server/Dockerfile` `docker-compose*.yml` `.dockerignore` `.env.example` `docs/DEPLOY.md` `.github/workflows/**` |
+| B2（fixer） | 容器化：多阶段 Dockerfile、compose（+TLS 叠加）、`.env.example`、`docs/DEPLOY.md`（含备份规程）、CI 服务端任务 | `crates/server/Dockerfile` `docker-compose*.yml` `.dockerignore` `.env.example` `docs/DEPLOY.md` `.github/workflows/**` |
 | V（fixer） | 无头渲染/截图测试管线的 spike：每页渲染 + 截图 PNG + 交互冒烟；无 GPU 环境自动跳过 | `tests/render.rs` `tests/support/**` |
 
-- 依赖：B1 依赖 sync-proto（播种已done）；V 依赖 lib.rs（播种已done）；B2 依赖冻结的二进制名/端口/环境变量契约（见 DEPLOY 契约，写入本文件 §5）
-- **Gate 1**: `cargo test --workspace` + clippy + fmt + `docker build` + `compose up` + curl 健康检查 + 双客户端同步往返脚本；Oracle 评审（服务端语义/安全）；explorer 结构扫描（workspace 边界）
+- 依赖：B1 依赖 sync-proto（播种已完成）；V 依赖 lib.rs（播种已完成）；B2 依赖冻结的二进制名/端口/环境变量契约（§5）
+- **Gate 1**: `cargo test --workspace` + clippy + fmt + `docker build` + `compose up` + curl 健康检查 + **两个脚本化 HTTP 客户端（server crate 集成测试）往返收敛**（不依赖 Phase 2 客户端引擎）；Oracle 评审（服务端语义/安全）；explorer 结构扫描（workspace 边界）
 
 ### Phase 2 — 客户端数据层与同步引擎（单泳道，避免 model.rs 多方写）
 
 | 泳道 | 内容 |
 | --- | --- |
-| D（fixer） | model 全实体 `updated_at`/`deleted_at`（serde default 兼容旧档）+ 读取全部过滤墓碑 + 写路径收口 `Mutation API`；store：损坏文件→备份+错误不覆盖、`sync.json`(0600)；`src/sync/**` 引擎（状态机/退避/合并）+ 首登策略对话框数据；settings 临时功能版同步卡 + 顶栏状态；集成测试（进程内起 server，两个客户端 DB 收敛）+ 单测（LWW/墓碑/迁移） |
+| D（fixer） | model 全实体 `updated_at`/`deleted_at`（serde default 兼容旧档）+ 读取过滤墓碑 + 写路径收口 `Mutation API`（本地改动=单调重戳 §2.1；远端应用=统一 apply §2.4 不重戳）；`notified_for` 迁出 → 本地 `runtime_state.json`；store：损坏文件→备份+错误不覆盖、`sync.json` v2（0600、游标按账号隔离）；`src/sync/core.rs`（无 UI 状态机：单飞/批次/统一 apply/退避/探针）+ `src/sync/worker.rs`（线程 + reqwest + 事件/Ack）；首登探针与三策略对话框数据；settings 临时功能版同步卡 + 顶栏状态；集成测试（进程内起 server，双客户端收敛 + 随机化收敛）+ 单测（戳规则/墓碑/迁移/合并） |
 
 - **Gate 2**: 上述测试 + clippy；Oracle 评审（数据层与协议一致性、旧数据兼容）；explorer 复核写路径收口（无裸 `db.courses.retain` 类写操作残留）
 
@@ -138,18 +141,21 @@ course-plan/
 - **crate 名**: `course-plan`(客户端) / `course-plan-sync-proto` / `course-plan-server`
 - **服务端二进制名**: `course-plan-server`；端口 `PORT=8080`；数据目录 `DATA_DIR=/data`（DB `/data/courseplan.db`）；`JWT_SECRET` 必填；`RUST_LOG` 默认 `info`
 - **健康检查**: `GET /api/health` → `{"status":"ok","version":"…"}`（无需鉴权）
-- **线协议**: 以 `docs/SYNC-PROTOCOL.md` 为唯一真源；DTO 类型由 `sync-proto` 提供，客户端与服务端禁止各自复制一份
+- **线协议**: 以 `docs/SYNC-PROTOCOL.md` (v1.1) 为唯一真源；DTO 由 `sync-proto` 提供，客户端与服务端禁止各自复制一份
+- **单写者契约**: `Database` 只在 UI 线程读写；sync worker 只做网络+状态机；服务端变更经 channel 回 UI 线程统一 apply；游标/水位仅在 UI Ack 后持久化
+- **统一 apply**: pull 应用与 push `overridden` 应用走同一函数（wins 规则 + checkin 合并）；任何路径不得「原样覆盖本地」
 - **图标**: 全部图标引用走 `src/assets.rs` 的 `AppAssets`；新增图标必须同步进该清单（有测试兜底）
-- **写路径**: 客户端一切数据修改必须经过 `Database` 的 Mutation API（自动盖 `updated_at`/墓碑），视图禁止直接改字段
+- **写路径**: 客户端一切数据修改必须经过 `Database` 的 Mutation API（本地改动自动盖单调戳；远端应用走不重戳路径）
 
 ## 6. 验证策略（证据链）
 
 | 层 | 手段 |
 | --- | --- |
 | 静态 | `cargo fmt --check`；`cargo clippy --workspace --all-targets -- -D warnings` |
-| 客户端单测 | LWW/墓碑/合并、store 迁移与损坏备份、写路径时间戳 |
-| 同步集成 | 进程内起真实 server（axum oneshot/temp sqlite），双客户端 DB 收敛（含删除、冲突、首登三策略、history 合并） |
-| 服务端 | 端点集成测试（鉴权失败/重复注册/pull 游标/push 覆盖语义/分页上限/墓碑） |
+| 客户端单测 | 单调戳规则、墓碑、store 迁移与损坏备份、checkin 合并、退避状态机 |
+| 同步集成 | 进程内起真实 server（axum + temp sqlite），双客户端 DB 收敛（含删除、冲突、首登三策略、history 合并、overridden 重试） |
+| **收敛性** | **随机化收敛测试**：3 个内存客户端 × 随机操作（增/改/删/打卡/清空）× 随机交错 push/pull → 静默后断言全部客户端状态一致；`sync::core` 无 UI 依赖以便直接驱动 |
+| 服务端 | 端点集成测试（鉴权失败/重复注册/pull 游标与读快照/push 裁决/分页与批次上限/墓碑/clamp） |
 | 容器 | `docker build` + `docker compose up` + healthcheck + 卷持久化重启 + curl 往返；`docker compose down -v` 清理 |
 | UI | 无头渲染（HeadlessAppContext, lavapipe）：全页截图（浅/深）+ 关键交互冒烟（开编辑器/打卡/tab 切换）；无 GPU 环境自动跳过 |
 | 设计评审 | observer 对照 DESIGN.md 看截图；发现的问题回流 designer |
@@ -159,10 +165,12 @@ course-plan/
 
 | 风险 | 缓解 |
 | --- | --- |
-| 时钟偏移破坏 LWW | 服务端 clamp `updated_at ≤ now+5min`；平局服务端胜（明确规则）；文档声明 |
+| 时钟偏移/回拨破坏 LWW | 本地戳单调规则 `max(now, watermark+1, prev+1)`（协议 §2.1）保证候选不漏推；服务端 clamp ≤ now+5min；平局服务端胜；未来戳只造成幂等重推（churn），不丢数据 |
+| apply 竞态（旧快照覆盖新鲜本地编辑） | 统一 apply 走 wins(remote, local)：仅远端严格更新才覆盖；本地胜者保持候选自动补推；随机化收敛测试兜底 |
 | 旧 data.json 兼容 | 全字段 `serde(default)`；旧档 `updated_at=0` → 首登全量推（可预期）；损坏档备份不覆盖 |
-| 新设备首登冲突（双方皆有数据） | 明确三选一对话框：合并(LWW, 推荐) / 云端覆盖本地 / 本地覆盖云端 |
-| checkin.history 整体 LWW 丢打卡 | 客户端合并策略：history 做 map 合并（远端在平局胜），合并后 `updated_at+1` 标记待推（见协议 §7） |
+| 新设备首登冲突（双方皆有数据） | 探针 + 三选一对话框：合并(LWW, 推荐) / 云端覆盖本地 / 本地覆盖云端（语义见协议 §6） |
+| checkin.history 丢打卡 | 统一 apply 内 map 合并（远端平局胜），bump 后保持候选补推（协议 §7） |
+| WAL 卷备份不完整 | `docs/DEPLOY.md` 指明 `.backup`/`VACUUM INTO`/停机拷贝；TLS 走 Caddy 叠加（强推荐） |
 | reqwest 引入 tokio → 客户端体积/打包 | rustls（去 openssl）；release `strip` 已有；体积回归抽查 |
 | 无头渲染在无 GPU CI 不可用 | 渲染测试运行时探测 renderer 失败即跳过并打印提示（保证 `cargo test` 到处绿） |
 | 图标清单漏加导致静默不渲染 | `tests/icons.rs` 遍历全部引用枚举，缺失即失败 |
