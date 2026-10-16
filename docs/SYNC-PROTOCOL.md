@@ -48,11 +48,12 @@ wins(incoming, existing) = incoming.updated_at > existing.updated_at   // 严格
 ```
 apply_remote(local_latest_version, incoming_change):
   profile/course/session/event/reminder/memo:
-    if local 不存在 or wins(incoming, local):  落地 incoming（ts = incoming.updated_at，不重戳）
-    else:                                      保持本地不动（本地仍是候选，下轮自动再推）
+    if local 不存在 or not wins(local, incoming):  落地 incoming（ts = incoming.updated_at，不重戳）
+    else:                                          保持本地不动（本地仍是候选，下轮自动再推）
   checkin: 见 §7
 ```
 
+- **平局（ts 相等）→ 远端胜**，与服务端裁决（§2.2 平局服务端胜）一致；若此处平局判本地胜，会与服务端 overridden 形成无限对冲。
 - 走 `wins` 后：稳定的远端版本照常落地（服务端已裁决过它相对自己持版本的胜负），只有「比远端更新」的本地编辑受保护并自动补推。
 - 本地胜利的实体不会丢：其 `ts >= watermark + 1`（§2.1 不变量）→ 下一轮必为候选。
 - `incoming.deleted=true` 且获胜 → 应用为本地墓碑；失败则忽略。
