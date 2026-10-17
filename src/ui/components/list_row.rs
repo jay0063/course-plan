@@ -1,6 +1,6 @@
 //! List row（详见 `docs/DESIGN.md` §3.9）。
 //!
-//! 高度 auto、最小 48，gap 12；hover/active 状态。
+//! 高度 auto、最小 48，gap 12；默认透明，hover/active 才出现底色。
 
 use crate::gpui::component::Theme;
 use crate::gpui::*;
@@ -9,7 +9,8 @@ use crate::ui::tokens::RADIUS_MD;
 
 /// 列表行：leading [title [subtitle]] trailing。
 ///
-/// 点击整行触发 `on_click`（如有）。`id` 用于交互测试定位（建议每行唯一）。
+/// 默认 bg `transparent`（放在卡片里不叠加第二层纸色）；hover `list_hover`；
+/// 按下 `list_active`。点击整行触发 `on_click`（如有）。
 pub fn list_row(
     theme: &Theme,
     id: impl Into<ElementId>,
@@ -23,16 +24,15 @@ pub fn list_row(
     let subtitle: Option<SharedString> = subtitle.map(Into::into);
 
     let mut row = div()
-        .id(id) // 强制 Stateful<Div>，确保 .on_click() 可用
+        .id(id)
         .flex()
         .items_center()
         .gap(px(12.))
         .min_h(px(48.))
         .px(px(12.))
         .rounded(RADIUS_MD)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.popover);
+        .hover(|s| s.bg(theme.list_hover))
+        .active(|s| s.bg(theme.list_active));
 
     if let Some(on_click) = on_click {
         row = row.on_click(on_click);
@@ -51,7 +51,7 @@ pub fn list_row(
         .child(
             div()
                 .text_sm()
-                .font_weight(FontWeight(500.0))
+                .font_weight(FontWeight(600.0))
                 .text_color(theme.foreground)
                 .child(title),
         )

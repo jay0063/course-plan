@@ -2,7 +2,6 @@ use crate::prelude::*;
 use gpui::assets::IconName;
 use gpui::component::Size;
 use gpui::component::WindowExt;
-use gpui::component::button::{Button, ButtonVariants};
 use gpui::component::input::InputState;
 use gpui::component::notification::Notification;
 use gpui::component::scroll::ScrollableElement;
@@ -14,8 +13,11 @@ use crate::sync::{
     FirstLoginPolicy, ProbeSummary, Status, SyncCommand, SyncCoreConfig, SyncEvent, SyncHandle,
 };
 use crate::ui::components::nav_item::nav_item as nav_item_comp;
-use crate::ui::components::overlay::page_subtitle;
+use crate::ui::components::overlay as overlay_comp;
+use crate::ui::components::overlay::FirstLoginAction;
+use crate::ui::components::page_header::page_subtitle;
 use crate::ui::components::sync_pill as sync_pill_comp;
+use crate::ui::motion;
 use crate::ui::tokens::{SIDEBAR_BRAND_H, SIDEBAR_FOOTER_H, SIDEBAR_W, TOPBAR_H};
 use crate::ui::widgets::{Skin, eid};
 use crate::views;
@@ -738,10 +740,12 @@ impl App {
         store::save_sync(&mut settings)
     }
 
-    /// 首登对话框三选一执行（§6-3）。
+    /// 首登对话框动作执行（§6-3）。
+    ///
+    /// `Cancel` 只关闭对话框、不发送策略；其余三种转为核心 [`FirstLoginPolicy`]。
     pub fn apply_first_login_policy(
         &mut self,
-        policy_first_login: FirstLoginPolicyKind,
+        action: FirstLoginAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -749,10 +753,15 @@ impl App {
             return;
         };
         let round_id = prompt.round_id;
-        let policy = match policy_first_login {
-            FirstLoginPolicyKind::Merge => FirstLoginPolicy::Merge,
-            FirstLoginPolicyKind::CloudWins => FirstLoginPolicy::CloudWins,
-            FirstLoginPolicyKind::LocalWins => {
+        let policy = match action {
+            FirstLoginAction::Cancel => {
+                self.sync_notice = Some("首登选择已暂缓，下次登录时再决定".to_string());
+                cx.notify();
+                return;
+            }
+            FirstLoginAction::Merge => FirstLoginPolicy::Merge,
+            FirstLoginAction::CloudWins => FirstLoginPolicy::CloudWins,
+            FirstLoginAction::LocalWins => {
                 // 本地覆盖云端：先重戳（压过服务端已知戳），stamp floor 一并抬高（§6-3c）。
                 let base = model::now_ms().max(prompt.probe.server_time_ms.saturating_add(1));
                 self.db.bump_all_stamps(base);
@@ -783,100 +792,19 @@ impl App {
         cx.notify();
     }
 
-    /// 首登对话框遮罩（普通功能实现，样式留待设计阶段）。
-    fn render_first_login_overlay(
-        &self,
-        skin: &Skin,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    /// 首登对话框遮罩（§3.13：走 `ui::components::overlay` + `first_login_prompt`）。
+    fn render_first_login_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.first_login_prompt.as_ref()?;
+        let theme = cx.theme().clone();
         let this = cx.entity();
-        let counts: Vec<String> = if prompt.probe.counts_by_kind.is_empty() {
-            vec!["（云端暂无实体）".to_string()]
-        } else {
-            prompt
-                .probe
-                .counts_by_kind
-                .iter()
-                .map(|(kind, count)| format!("{} × {}", kind.label_cn(), count))
-                .collect()
-        };
-        let mut buttons = div().flex().gap_2().flex_wrap();
-        for (label, kind, primary) in [
-            ("合并（推荐）", FirstLoginPolicyKind::Merge, true),
-            ("云端覆盖本地", FirstLoginPolicyKind::CloudWins, false),
-            ("本地覆盖云端", FirstLoginPolicyKind::LocalWins, false),
-        ] {
-            let this = this.clone();
-            let mut button = Button::new(eid("first-login", label))
-                .compact()
-                .label(label);
-            button = if primary {
-                button.primary()
-            } else {
-                button.secondary()
-            };
-            buttons = buttons.child(button.on_click(move |_e, window, cx| {
+        let dialog =
+            overlay_comp::first_login_prompt(&theme, &prompt.probe, move |action, window, cx| {
                 this.update(cx, |this, cx| {
-                    this.apply_first_login_policy(kind, window, cx)
+                    this.apply_first_login_policy(action, window, cx)
                 });
-            }));
-        }
-        let dialog = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_6()
-            .w(px(420.))
-            .rounded_lg()
-            .bg(skin.panel)
-            .border_1()
-            .border_color(skin.border)
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .text_color(skin.fg)
-                    .child("首次登录：云端与本地都有数据"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(skin.muted)
-                    .child("云端内容：")
-                    .children(counts.into_iter().map(|line| div().child(line))),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(skin.muted)
-                    .child("「本地覆盖云端」会为云端独有数据推送删除（墓碑）。"),
-            )
-            .child(buttons);
-
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(Hsla { a: 0.5, ..skin.fg })
-                .child(dialog)
-                .into_any_element(),
-        )
+            });
+        Some(overlay_comp::overlay(&theme, dialog).into_any_element())
     }
-}
-
-/// 首登三选一（UI 侧枚举，避免与核心类型耦合过紧）。
-#[derive(Clone, Copy)]
-pub enum FirstLoginPolicyKind {
-    Merge,
-    CloudWins,
-    LocalWins,
 }
 
 impl Default for App {
@@ -956,7 +884,17 @@ impl Render for App {
 
         let sidebar = render_sidebar(self, &skin, cx);
         let topbar = render_topbar(self, &skin, cx);
-        let overlay = self.render_first_login_overlay(&skin, cx);
+        let overlay = self.render_first_login_overlay(cx);
+
+        // §3.18 页面切换：opacity 0→1 + translateY(4px→0)，260ms，每页唯一 id。
+        // `with_animation` 内部自动遵守 reduce-motion。
+        // 注意：wrapper 必须 `size_full()`（父层有确定高度），否则子内容的
+        // 百分比高度会相对 auto 解析而塌缩成 0。
+        let page_enter = div().size_full().child(content).with_animation(
+            ElementId::from(format!("page-enter:{}", page.label())),
+            motion::page_enter_animation(),
+            |el, delta| el.opacity(delta).mt(px(4. * (1.0 - delta))),
+        );
 
         div()
             .flex()
@@ -973,7 +911,7 @@ impl Render for App {
                     .min_w_0()
                     .h_full()
                     .child(topbar)
-                    .child(div().flex_1().min_h_0().overflow_hidden().child(content)),
+                    .child(div().flex_1().min_h_0().overflow_hidden().child(page_enter)),
             )
             .when_some(overlay, |d, overlay| d.child(overlay))
     }
@@ -1034,22 +972,30 @@ fn render_sidebar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement 
                             .child(grade.clone()),
                     )
                 }),
-        );
+        )
+        .test_support();
 
     // nav 列表（使用 `nav_item` 组件；测试 id 与 Phase 2 保持一致）。
     let mut items = div().flex().flex_col().gap(px(0.)).p(px(8.));
     for p in Page::ALL {
         let active = p == page;
         let this = this.clone();
-        let badge = match p {
-            Page::Reminders => pending_reminders(&app.db),
-            Page::CheckIns => app
-                .db
-                .checkins_on(today)
-                .into_iter()
-                .filter(|c| !c.done_on(today))
-                .count(),
-            _ => 0,
+        // badge 颜色按语义（§3.3）：过期提醒 danger、待打卡 warning。
+        let badge: Option<(usize, Hsla)> = match p {
+            Page::Reminders => {
+                let n = pending_reminders(&app.db);
+                (n > 0).then_some((n, theme.danger))
+            }
+            Page::CheckIns => {
+                let n = app
+                    .db
+                    .checkins_on(today)
+                    .into_iter()
+                    .filter(|c| !c.done_on(today))
+                    .count();
+                (n > 0).then_some((n, theme.warning))
+            }
+            _ => None,
         };
         items = items.child(nav_item_comp(
             theme,
@@ -1057,14 +1003,15 @@ fn render_sidebar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement 
             p.icon(),
             p.label(),
             active,
-            Some(badge),
+            badge,
             move |_e, _w, cx| {
                 this.update(cx, |this, cx| this.goto(p, cx));
             },
         ));
     }
 
-    // 底部：日期 + compact 同步状态。
+    // 底部：日期 + compact 同步状态（点击跳设置页）。
+    let this_sync = this.clone();
     let footer = div()
         .flex()
         .items_center()
@@ -1082,7 +1029,11 @@ fn render_sidebar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement 
         )
         .child(sync_pill_comp::sync_indicator_compact(
             theme,
+            eid("ui:sidebar", "sync-indicator"),
             &app.sync_status,
+            move |_e, _w, cx| {
+                this_sync.update(cx, |this, cx| this.goto(Page::Settings, cx));
+            },
         ));
 
     div()
@@ -1145,13 +1096,19 @@ fn render_topbar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement {
 
     // 右：sync_pill + theme toggle (icon_only) + 快速添加 (primary)
     let this_for_pill = this.clone();
-    let sync_pill_any = sync_pill_comp::sync_pill(theme, &app.sync_status, move |_e, _w, cx| {
-        this_for_pill.update(cx, |this, cx| {
-            this.goto(Page::Settings, cx);
-        });
-    })
+    let sync_pill_any = sync_pill_comp::sync_pill(
+        theme,
+        ElementId::from("ui:topbar:sync-pill"),
+        &app.sync_status,
+        move |_e, _w, cx| {
+            this_for_pill.update(cx, |this, cx| {
+                this.goto(Page::Settings, cx);
+            });
+        },
+    )
     .into_any_element();
 
+    let this_for_quick_add = this.clone();
     div()
         .flex()
         .items_center()
@@ -1170,30 +1127,26 @@ fn render_topbar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 .items_center()
                 .gap(px(8.))
                 .child(sync_pill_any)
-                .child(
-                    Button::new("ui:topbar:theme-toggle")
-                        .ghost()
-                        .compact()
-                        .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
-                        .tooltip(if dark {
-                            "切换到浅色主题"
-                        } else {
-                            "切换到深色主题"
-                        })
-                        .on_click(move |_e, window, app| {
-                            crate::theme::toggle_mode(Some(window), app);
-                        }),
-                )
-                .child(
-                    Button::new("ui:topbar:quick-add")
-                        .primary()
-                        .compact()
-                        .icon(Icon::new(IconName::Plus))
-                        .label("快速添加")
-                        .on_click(move |_e, window, cx| {
-                            this.update(cx, |this, cx| this.quick_add(window, cx));
-                        }),
-                ),
+                .child(crate::ui::components::button::icon_only(
+                    "ui:topbar:theme-toggle",
+                    if dark { IconName::Sun } else { IconName::Moon },
+                    if dark {
+                        "切换到浅色主题"
+                    } else {
+                        "切换到深色主题"
+                    },
+                    move |_e, window, app| {
+                        crate::theme::toggle_mode(Some(window), app);
+                    },
+                ))
+                .child(crate::ui::components::button::primary_with_icon(
+                    "ui:topbar:quick-add",
+                    "快速添加",
+                    IconName::Plus,
+                    move |_e, window, cx| {
+                        this_for_quick_add.update(cx, |this, cx| this.quick_add(window, cx));
+                    },
+                )),
         )
         .into_any_element()
 }

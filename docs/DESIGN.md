@@ -1,8 +1,8 @@
 # CoursePlan 设计系统规范（Design Frozen）
 
-> 状态：Phase 3（lane DS）封版。Phase 4 三个泳道（V1 dashboard + checkins；V2 courses + schedule + events；V3 reminders + memos + settings）必须**严格**按本文档落地。歧义即缺陷。
+> 状态：Phase 3（lane DS / DS-2 修复）封版 **v1.2**。Phase 4 三个泳道（V1 dashboard + checkins；V2 courses + schedule + events；V3 reminders + memos + settings）必须**严格**按本文档落地。歧义即缺陷。
 >
-> 基线 commit：`d7c423a`。视觉方向：**活力儿童向**——高饱和但和谐的彩笔色调、暖纸面底、大圆角、粗壮友好控件、恰到好处的微喜悦；仍保持家长日程类工具的克制与扫描速度。
+> 基线 commit：`d7c423a` + DS-2 修复（未提交工作区）。视觉方向：**活力儿童向**——高饱和但和谐的彩笔色调、暖纸面底、大圆角、粗壮友好控件、恰到好处的微喜悦；仍保持家长日程类工具的克制与扫描速度。
 
 ---
 
@@ -22,7 +22,7 @@
 
 3. **每个像素都被一个 token 拥有。** 写视图层时**不可**直接写 `px(12.)`、`theme.primary.with_alpha(0.14)` 之类的魔法数；所有间距/字号/色/圆角必须走 §2 的 token；视图层允许的例外只有两类：① 课程色（§2.6 八色调色板），② 一次性像素（如某条线 1px、进度条高度按比例计算）。
 
-4. **动效是奖励，不是装饰。** 仅在以下三处动效：① 页面切换淡入（160ms），② 打卡勾选（spring 弹一下 + 短促光晕），③ 模态/侧滑进入（gpui-kit 自带）。其它 hover/active 用 120ms 透明度变化即可。所有动效被系统 `reduce-motion` 关闭。
+4. **动效是奖励，不是装饰。** 仅在以下三处动效：① 页面切换淡入（260ms，§3.18），② 打卡勾选（spring 弹一下 + 短促光晕），③ 模态/侧滑进入（gpui-kit 自带）。其它 hover/active 用 120ms 透明度变化即可。所有动效被系统 `reduce-motion` 关闭。
 
 5. **家长永远赢在密度。** 信息密度不低于 Phase 2 基线：7 列课表、看板 3 列、列表可滚动到 12+ 项。任何"为了活力加留白"导致家长要多翻一屏才能看到所有待办——回退。活力感来自**形状与色彩**，不是来自**留白**。
 
@@ -43,103 +43,113 @@
 
 ### 2.1 颜色：亮色（Paper Light）
 
-纸面暖色调。`H/s/l` 是 HSL 数值（与 gpui `Hsla` 一致；`a=1.0` 省略）。
+纸面暖色调。**hex 是契约**——代码（`src/theme.rs::light_palette()`）通过
+`hex_color("#…")` 反算 Hsla；测试断言 `hex_color(palette_token) == 设计表 hex`（±2 通道）。
+**饱和 fill（success / warning / danger / accent）的加深档位**保证白字 WCAG AA ≥4.5
+（详见 §5.1）；primary 保留 `#F08A36` 但文字用深棕 ink `#1F1612`（7.10:1 AAA）。
 
-| Token | hex | Hsla | 用途 |
-|---|---|---|---|
-| `surface` | `#FBF6EC` | `220 0.18 0.965` | 全屏底色（**米纸**） |
-| `panel` | `#FFFCF5` | `40 0.50 0.990` | 卡片/侧栏/顶栏/输入底 |
-| `sidebar` | `#F5EBD9` | `38 0.42 0.915` | 侧栏纸色（比 surface 暖一档） |
-| `topbar` | `#FFFCF5` | `40 0.50 0.990` | 顶栏底色（与 panel 同） |
-| `border` | `#EADFC8` | `36 0.40 0.870` | 主分隔线/边框 |
-| `border_strong` | `#D9C8A3` | `38 0.40 0.770` | 输入聚焦环/强分隔 |
-| `foreground` | `#2A2620` | `32 0.10 0.155` | 主文字 |
-| `muted_foreground` | `#7A6F60` | `32 0.10 0.420` | 次级文字/描述 |
-| `muted` | `#F1E8D5` | `38 0.40 0.900` | chip/分类标签填充底 |
-| `primary` | `#F08A36` | `26 0.90 0.575` | **主橙（彩笔橙）**：主要按钮、当前页指示 |
-| `primary_hover` | `#E27A28` | `26 0.85 0.520` | 主橙 hover |
-| `primary_active` | `#C9661E` | `26 0.80 0.450` | 主橙 active |
-| `primary_foreground` | `#FFFFFF` | `0 0 1.000` | 主橙按钮文字（**白**而非黑，更活泼） |
-| `secondary` | `#FFF1DD` | `34 0.80 0.940` | 次级按钮底（暖米，比 primary 弱一档） |
-| `secondary_foreground` | `#5A4422` | `32 0.55 0.245` | 次级按钮文字 |
-| `accent` | `#5AA9E6` | `206 0.74 0.625` | **糖蓝**：链接、信息徽标 |
-| `accent_foreground` | `#FFFFFF` | `0 0 1.000` | 糖蓝文字 |
-| `success` | `#5DBB6A` | `132 0.45 0.545` | 打卡完成/进度条 |
-| `success_foreground` | `#FFFFFF` | `0 0 1.000` | success 文字 |
-| `warning` | `#F0B73D` | `40 0.85 0.590` | 提醒徽标/进行中 |
-| `warning_foreground` | `#5A4422` | `32 0.55 0.245` | warning 文字（暖深棕，在米黄上更可读） |
-| `danger` | `#E36B6B` | `0 0.65 0.630` | 删除/同步错误 |
-| `danger_foreground` | `#FFFFFF` | `0 0 1.000` | danger 文字 |
-| `info` | `#5AA9E6` | `206 0.74 0.625` | 校内课时/普通信息（同 accent） |
-| `info_foreground` | `#FFFFFF` | `0 0 1.000` | info 文字 |
-| `progress_bar` | `#F08A36` | `26 0.90 0.575` | 进度条填充（= primary） |
-| `ring` | `#F0B96D` | `32 0.85 0.685` | 键盘聚焦环（暖橙，不刺眼） |
-| `selection` | `#FCE5C0` | `32 0.85 0.880` | 文本选区（透明橙） |
-| `list_hover` | `#F1E8D5` | `38 0.40 0.900` | 列表行 hover |
-| `list_active` | `#FCE5C0` | `32 0.85 0.880` | 列表行选中（透明橙） |
-| `chart_1..5` | — | 见 §2.7 | 图表色阶 |
+| Token | hex | 用途 |
+|---|---|---|
+| `surface` | `#FBF6EC` | 全屏底色（**米纸**） |
+| `panel` | `#FFFCF5` | 卡片/侧栏/顶栏/输入底 |
+| `sidebar` | `#F5EBD9` | 侧栏纸色（比 surface 暖一档） |
+| `topbar` | `#FFFCF5` | 顶栏底色（与 panel 同） |
+| `border` | `#EADFC8` | 主分隔线/边框 |
+| `border_strong` | `#D9C8A3` | 输入边框/强分隔 |
+| `foreground` | `#2A2620` | 主文字 |
+| `muted_foreground` | `#7A6F60` | 次级文字/描述 |
+| `muted` | `#F1E8D5` | chip/分类标签填充底 |
+| `primary` | `#F08A36` | **主橙（彩笔橙）**：主要按钮、当前页指示 |
+| `primary_hover` | `#E27A28` | hover |
+| `primary_active` | `#C9661E` | active |
+| `primary_foreground` | `#1F1612` | 主橙按钮文字（深棕 ink，7.10:1） |
+| `secondary` | `#FFF1DD` | 次级按钮底（暖米） |
+| `secondary_foreground` | `#5A4422` | 次级按钮文字 |
+| `accent` | `#3478AC` | **糖蓝（加深档）**：链接、信息徽标（白字 4.74:1） |
+| `accent_foreground` | `#FFFFFF` | 糖蓝文字 |
+| `success` | `#3D8246` | 完成（加深档，白字 4.69:1） |
+| `success_foreground` | `#FFFFFF` | success 文字 |
+| `warning` | `#8F6612` | 提醒（加深档，白字 5.15:1） |
+| `warning_foreground` | `#FFFFFF` | warning 文字 |
+| `danger` | `#9C2929` | 删除/同步错误（加深档，白字 7.60:1） |
+| `danger_foreground` | `#FFFFFF` | danger 文字 |
+| `info` | `#3478AC` | 校内课时/普通信息（同 accent） |
+| `info_foreground` | `#FFFFFF` | info 文字 |
+| `progress_bar` | `#F08A36` | 进度条填充（= primary） |
+| `ring` | `#F0B96D` | 键盘聚焦环（暖橙，不刺眼） |
+| `selection` | `#F08A363D` | 文本选区（primary α0.24） |
+| `list_hover` | `#F1E8D5` | 列表行 hover |
+| `list_active` | `#F08A3633` | 列表行选中（primary α0.20） |
+| `chart_1..5` | 见 §2.7 | 图表色阶 |
+
+> HSL 是运行期派生量（`hex_color()` 反算），**不是契约**；上表的 hex 才是。
+> `selection` / `list_active` 保留 alpha：vendor `apply_config` 会对这两个字段
+> 做 α 上限（0.30 / 0.20），取上限内可直接 round-trip。
+
 
 **字段映射到 `gpui_component::ThemeColor`**：`background→surface`, `foreground→foreground`, `sidebar→sidebar`, `sidebar_foreground→foreground`, `sidebar_accent→list_active`, `sidebar_accent_foreground→foreground`, `sidebar_border→border`, `primary→primary`, `primary_foreground→primary_foreground`, `secondary→secondary`, `secondary_foreground→secondary_foreground`, `muted→muted`, `muted_foreground→muted_foreground`, `accent→accent`, `accent_foreground→accent_foreground`, `danger→danger`, `danger_foreground→danger_foreground`, `success→success`, `success_foreground→success_foreground`, `warning→warning`, `warning_foreground→warning_foreground`, `info→info`, `info_foreground→info_foreground`, `border→border`, `input→border_strong`, `ring→ring`, `progress_bar→progress_bar`, `list_hover→list_hover`, `list_active→list_active`, `tab_active→surface`, `tab_active_foreground→foreground`, `selection→selection`。
 
 ### 2.2 颜色：暗色（Cozy Dark）
 
-暖调暗色——不是纯黑/纯灰，是深棕纸 + 暖光。**任何色相都比亮色 HSL 中的 L 低 30 个百分点左右，S 上调一点以补偿**。
+暖调暗色——不是纯黑/纯灰，是深棕纸 + 暖光。**hex 是契约**——代码
+（`src/theme.rs::dark_palette()`）通过 `hex_color("#…")` 反算 Hsla；测试断言
+`hex_color(palette_token) == 设计表 hex`（±2 通道）。详见 §5.1 对比度表。
 
-| Token | hex | Hsla | 用途 |
-|---|---|---|---|
-| `surface` | `#1B1815` | `30 0.10 0.097` | 全屏底色（深棕纸） |
-| `panel` | `#26221E` | `30 0.08 0.135` | 卡片/侧栏/顶栏底 |
-| `sidebar` | `#1F1B17` | `28 0.10 0.108` | 侧栏（比 surface 深一档） |
-| `topbar` | `#26221E` | `30 0.08 0.135` | 顶栏底色 |
-| `border` | `#3A342C` | `32 0.10 0.198` | 主分隔线 |
-| `border_strong` | `#5C5240` | `34 0.18 0.310` | 聚焦环 |
-| `foreground` | `#F2E9D6` | `36 0.50 0.890` | 主文字（暖米白） |
-| `muted_foreground` | `#A89A82` | `36 0.18 0.580` | 次级文字 |
-| `muted` | `#332D25` | `32 0.14 0.175` | chip/分类标签底 |
-| `primary` | `#FFA55C` | `24 1.00 0.680` | **糖橙**（亮色版调亮以保对比度） |
-| `primary_hover` | `#FFB870` | `24 1.00 0.720` | hover |
-| `primary_active` | `#E27A28` | `26 0.85 0.520` | active |
-| `primary_foreground` | `#1B1815` | `30 0.10 0.097` | 主按钮文字（**深棕**，与亮色相反——暗色下白字+糖橙太亮） |
-| `secondary` | `#3A3328` | `32 0.18 0.193` | 次级按钮底（深棕） |
-| `secondary_foreground` | `#F2E9D6` | `36 0.50 0.890` | 次级文字 |
-| `accent` | `#7FBFEE` | `204 0.78 0.700` | **糖蓝（亮）** |
-| `accent_foreground` | `#0F1F2E` | `210 0.50 0.120` | 深蓝底 |
-| `success` | `#7CCE89` | `134 0.50 0.640` | 完成 |
-| `success_foreground` | `#0E2410` | `135 0.50 0.100` | 深绿底 |
-| `warning` | `#FFC664` | `38 0.95 0.690` | 提醒 |
-| `warning_foreground` | `#3D2A0F` | `34 0.65 0.150` | 深棕底 |
-| `danger` | `#F08B8B` | `0 0.70 0.735` | 错误（亮一档） |
-| `danger_foreground` | `#2E0F0F` | `0 0.65 0.115` | 深红底 |
-| `info` | `#7FBFEE` | `204 0.78 0.700` | 信息（同 accent） |
-| `info_foreground` | `#0F1F2E` | `210 0.50 0.120` | 深蓝底 |
-| `progress_bar` | `#FFA55C` | `24 1.00 0.680` | 进度条（= primary） |
-| `ring` | `#FFC080` | `30 1.00 0.750` | 聚焦环 |
-| `selection` | `#5A3D1A` | `30 0.55 0.225` | 文本选区 |
-| `list_hover` | `#332D25` | `32 0.14 0.175` | 列表行 hover |
-| `list_active` | `#5A3D1A` | `30 0.55 0.225` | 列表行选中 |
-| `chart_1..5` | — | 见 §2.7 | 图表色阶（亮色版 +15%L） |
+| Token | hex | 用途 |
+|---|---|---|
+| `surface` | `#1B1815` | 全屏底色（深棕纸） |
+| `panel` | `#26221E` | 卡片/侧栏/顶栏底 |
+| `sidebar` | `#1F1B17` | 侧栏（比 surface 深一档） |
+| `topbar` | `#26221E` | 顶栏底色 |
+| `border` | `#3A342C` | 主分隔线 |
+| `border_strong` | `#5C5240` | 输入边框 |
+| `foreground` | `#F2E9D6` | 主文字（暖米白，≥13:1） |
+| `muted_foreground` | `#A89A82` | 次级文字（≥5.7:1） |
+| `muted` | `#332D25` | chip/分类标签底 |
+| `primary` | `#FFA55C` | **糖橙**（亮色版调亮；深棕字 9.08:1） |
+| `primary_hover` | `#FFB870` | hover |
+| `primary_active` | `#E27A28` | active |
+| `primary_foreground` | `#1B1815` | 主按钮文字（**深棕**） |
+| `secondary` | `#3A3328` | 次级按钮底（深棕） |
+| `secondary_foreground` | `#F2E9D6` | 次级文字 |
+| `accent` | `#7FBFEE` | **糖蓝（亮）**（深蓝字 8.43:1） |
+| `accent_foreground` | `#0F1F2E` | 深蓝底 |
+| `success` | `#7CCE89` | 完成（深绿字 8.64:1） |
+| `success_foreground` | `#0E2410` | 深绿底 |
+| `warning` | `#FFC664` | 提醒（深棕字 8.80:1） |
+| `warning_foreground` | `#3D2A0F` | 深棕底 |
+| `danger` | `#F08B8B` | 错误（亮一档；深红字 7.36:1） |
+| `danger_foreground` | `#2E0F0F` | 深红底 |
+| `info` | `#7FBFEE` | 信息（同 accent） |
+| `info_foreground` | `#0F1F2E` | 深蓝底 |
+| `progress_bar` | `#FFA55C` | 进度条（= primary） |
+| `ring` | `#FFC080` | 聚焦环 |
+| `selection` | `#5A3D1A4D` | 文本选区（深棕 α0.30） |
+| `list_hover` | `#332D25` | 列表行 hover |
+| `list_active` | `#5A3D1A33` | 列表行选中（深棕 α0.20） |
+| `chart_1..5` | 见 §2.7 | 图表色阶 |
 
-**暗色特别说明**：按钮文字色与亮色**完全相反**——亮色用白字 + 糖橙底，暗色用深棕字 + 亮糖橙底。这是活力儿童向的视觉承诺：**不让按钮变成悬浮糖块**。
+
+**暗色特别说明**：按钮文字色与亮色**相反**——亮色主橙用深棕 ink（7.10:1），暗色亮糖橙底用深棕字（9.08:1）；其它饱和 fill 亮色用"加深档 + 白字"、暗色用"提亮档 + 深色字"。这是活力儿童向的视觉承诺：**不让按钮变成悬浮糖块，也不让白字落在浅黄上**。
 
 ### 2.3 圆角
 
-写入 `Theme::radius` 与 `Theme::radius_lg`（gpui-kit 全局生效），并暴露为 `ui::tokens::radius::*`。
+写入 `Theme::radius` 与 `Theme::radius_lg`（gpui-kit 全局生效），并暴露为 `ui::tokens::{RADIUS_*}` 顶层常量（**没有** `tokens::radius` 子模块）。
 
 | Token | px | 用途 |
 |---|---|---|
-| `none` | 0 | 不使用（保留以备方角场景） |
-| `sm` | 6 | 紧凑徽标、checkbox |
-| `md` | 10 | 次级容器、章节头、状态 pill |
-| `lg` | 14 | **默认**：按钮、输入框、卡片、tabs 段 |
-| `xl` | 20 | 大型卡片（首屏统计块、模态容器） |
-| `2xl` | 28 | 对话框/dialog/sheet |
-| `3xl` | 9999 | `radius_full`——圆形头像、勾选框、徽章点 |
+| `RADIUS_SM` | 6 | 紧凑徽标、checkbox、链接按钮 |
+| `RADIUS_MD` | 10 | 次级容器、章节头、状态 pill、icon-only 按钮 |
+| `RADIUS_LG` | 14 | 按钮、卡片、输入框、tabs 段 |
+| `RADIUS_XL` | 20 | 大型卡片（首屏统计块） |
+| `RADIUS_2XL` | 28 | 对话框/dialog/sheet |
+| `RADIUS_FULL` | 9999 | 圆形头像、勾选框、徽章点 |
 
-**全局**：亮色 `radius = 10` (md)，`radius_lg = 14` (lg)。暗色同。所有 `Button`/`Input`/`Select`/`TabBar`/`Card` 等 gpui-kit 控件自动使用。
+**全局**：`Theme.radius = 10`（gpui-kit 默认控件，如 Input/Select/TabBar）、`Theme.radius_lg = 14`（对话框等大容器）。应用自绘的按钮/卡片在组件里显式用 `RADIUS_LG`(14)，所以视觉上"默认圆角"是 14。
 
 ### 2.4 间距
 
-暴露为 `ui::tokens::space::*`。**4 的倍数**，最常用 8/12/16/24。
+暴露为 `ui::tokens::{SPACE_*}` 顶层常量（**没有** `tokens::space` 子模块）。**4 的倍数**，最常用 8/12/16/24。
 
 | Token | px | 用途 |
 |---|---|---|
@@ -153,7 +163,7 @@
 
 ### 2.5 字体与字阶
 
-`Theme::font_family` 默认 `".SystemUIFont"`（与 Phase 1 一致）。**字阶**集中在 `ui::tokens::text::*`：
+`Theme::font_family` 默认 `".SystemUIFont"`（与 Phase 1 一致）。**字号**集中在 `ui::tokens::text::*`（`pub mod text`，只有 size 常量；字重/行高由组件显式设置，颜色永远取 `&Theme`——**没有** `tokens::color`）：
 
 | Token | size (px) | weight | line-height | 用途 |
 |---|---|---|---|---|
@@ -172,18 +182,20 @@
 
 ### 2.6 课程色（8 色调色板）
 
-`ui::widgets::palette_at(index: usize) -> Hsla`，索引与 `Course.color` 对应（0-7）。**明亮糖果**但**与米黄纸面有足够对比**——不能浮夸。
+`ui::palette::palette_at_for(index: usize, theme: &Theme) -> Hsla`，索引与 `Course.color` 对应（0-7）。**Phase 4 必须使用此函数**（暗色主题会切到暗色盘；`palette_at(index)` 仅保留给无主题的兼容调用）。**明亮糖果**但**与米黄纸面有足够对比**——不能浮夸。
 
-| idx | name | 亮色 hex | 亮色 Hsla | 暗色 hex | 暗色 Hsla | 用途 |
-|---|---|---|---|---|---|---|
-| 0 | **天蓝** | `#5AA9E6` | `206 0.74 0.625` | `#7FBFEE` | `204 0.78 0.700` | 默认/语文 |
-| 1 | **蜜桃** | `#F38B6B` | `14 0.85 0.685` | `#FFA38A` | `14 0.95 0.770` | 数学 |
-| 2 | **薄荷** | `#5DBB6A` | `132 0.45 0.545` | `#7CCE89` | `134 0.50 0.640` | 英语 |
-| 3 | **芒果** | `#F0B73D` | `40 0.85 0.590` | `#FFC664` | `38 0.95 0.690` | 补习 |
-| 4 | **葡萄** | `#9D7DD6` | `264 0.55 0.665` | `#B79DE8` | `262 0.62 0.755` | 兴趣 |
-| 5 | **青瓷** | `#4DBFB3` | `174 0.52 0.520` | `#74D6CB` | `174 0.58 0.640` | 体育 |
-| 6 | **嫩芽** | `#A6C84B` | `76 0.55 0.535` | `#BCDB66` | `76 0.62 0.630` | 科学 |
-| 7 | **玫瑰** | `#E36B95` | `340 0.65 0.655` | `#F08FB0` | `340 0.75 0.755` | 美术 |
+| idx | name | 亮色 hex | 暗色 hex | 用途 |
+|---|---|---|---|---|
+| 0 | **天蓝** | `#5AA9E6` | `#7FBFEE` | 默认/语文 |
+| 1 | **蜜桃** | `#F38B6B` | `#FFA38A` | 数学 |
+| 2 | **薄荷** | `#5DBB6A` | `#7CCE89` | 英语 |
+| 3 | **芒果** | `#F0B73D` | `#FFC664` | 补习 |
+| 4 | **葡萄** | `#9D7DD6` | `#B79DE8` | 兴趣 |
+| 5 | **青瓷** | `#4DBFB3` | `#74D6CB` | 体育 |
+| 6 | **嫩芽** | `#A6C84B` | `#BCDC72` | 科学 |
+| 7 | **玫瑰** | `#E36B95` | `#F08FB0` | 美术 |
+
+注：hex 是契约——代码用 `hex_color("#…")`（const fn，RGB→HSL 反算）生成 `COURSE_PALETTE` / `COURSE_PALETTE_DARK`（均为 `pub const`）。Phase 4 不需要看 HSL，只用 hex。
 
 `tint(color, theme)`：`alpha = if dark { 0.22 } else { 0.16 }`，用于课程块的填充底（足够淡以不抢主色，足够浓以让色块有"课程味道"）。
 
@@ -198,8 +210,8 @@
 | `chart_3` | `#3F8FD0` | `#7FBFEE` | 普通柱形 |
 | `chart_4` | `#2E73B5` | `#A8D2F2` | 普通柱形 |
 | `chart_5` | `#1F5C97` | `#CFE5F8` | 普通柱形 |
-| `chart_bullish` | `#5DBB6A` | `#7CCE89` | 上升 |
-| `chart_bearish` | `#E36B6B` | `#F08B8B` | 下降 |
+| `chart_bullish` | `#3D8246` | `#7CCE89` | 上升 |
+| `chart_bearish` | `#9C2929` | `#F08B8B` | 下降 |
 | `chart_grid` | `#EADFC8` | `#3A342C` | 网格线 |
 
 ### 2.8 图标尺寸
@@ -208,11 +220,12 @@
 |---|---|---|
 | `xs` | 12 | inline（在 chip 内、紧贴文字） |
 | `sm` | 14 | 默认（按钮内、tab、nav item） |
-| `md` | 18 | 卡片标题旁、状态徽标 |
+| `md` | 18 | 卡片标题旁、状态徽标、stat_tile 右上角 |
 | `lg` | 22 | 空态/大型交互按钮 |
 | `xl` | 32 | 顶栏页面图标、品牌图标 |
+| — | 56 | 空态插画（Illustrated / Celebratory，直接 `Size::Size(px(56.))`） |
 
-`Sizable` trait 的 `Size::XSmall/Small/Medium/Large` 对应 xs/sm/md/lg，xl 需手动 `.with_size(Size::Large)` + 自定义或直接 `px(32.)`。本系统默认全部使用 `Small`（=14px）。
+`Sizable` trait 的 `Size::XSmall/Small/Medium/Large` 对应 12/16/24/32 级别；非标尺寸用 `Size::Size(px(n))`（stat icon 18、空态 56、32 都是这样落的）。本系统控件内图标默认 `Small`。
 
 ### 2.9 阴影 / 层级
 
@@ -237,7 +250,7 @@
 | `spring_control` | `Spring::new(220ms)` 阻尼 0.85 | 打卡勾选弹一下 |
 | `spring_move` | `Spring::new(320ms)` 阻尼 0.85 | 拖拽/重排 |
 
-**reduce-motion 兜底**：所有用 `with_animation` 的组件自动遵守；自定义 spring 用 `if !reduce_motion { spring(...) } else { transition(... duration_instant) }` 包一层。**由 `theme.motion` 通过 `Presence`/`transition` 注入；Phase 4 写视图时直接调用 `ui::motion::pop_in(...)` / `ui::motion::spring_bounce(...)`。**
+**reduce-motion 兜底**：所有用 `with_animation` 的组件自动遵守（`AnimationElement` 在 `cx.reduce_motion()` 时直接渲染终态）；自定义 spring 用 `if reduce_motion { bounce_spring(true) } else { bounce_spring(false) }`。**Phase 4 写视图时直接调用 `ui::motion::page_enter_animation()` / `ui::motion::bounce_spring(...)`**（app.rs 已用前者做页面转场）。
 
 ---
 
@@ -265,8 +278,14 @@
 
 - **Anatomy**：`title` 块（20px 加粗页面名 + 12px 灰色副标题/统计，下边自动隐藏）；右侧 `actions`：`sync_pill` + `theme_toggle` 图标按钮 + `quick_add` 主按钮。
 - **背景**：`topbar`（与 panel 同）。`border_b_1px border_color=border`。高度 56px，左右 padding 24。
-- **副标题**：根据当前页生成（如 dashboard："10月17日 周六 · 今日 2 节课 · 待打卡 2 项"；courses："已建 7 门课程 · 2 项已归档"）。由 `ui::api::page_subtitle(page, app)` 提供。
-- **Motion**：页面切换时整个 content 区做 180ms 淡入（opacity 0→1 + translateY(4px → 0)），尊重 reduce-motion。
+- **副标题**：根据当前页生成（如 dashboard："10月17日 周六 · 今日 2 节课 · 待打卡 2 项"；courses："已建 7 门课程 · 2 项已归档"）。由 `ui::components::page_header::page_subtitle(page, db)` 提供（**不在** `overlay.rs`）。
+- **Motion**：页面切换时整个 content 区做 260ms 淡入（opacity 0→1 + translateY(4px → 0)），每页唯一动画 id（`page-enter:{label}`），尊重 reduce-motion（`ui::motion::page_enter_animation()`）。
+
+#### 3.1.4 标题与 CTA 归属（topbar vs page_header）
+
+- **顶栏独占**：页面名 + 副标题 + 全局动作（`sync_pill` / `theme_toggle` / `quick_add`）。任何页面都不得在内容区重复顶栏的页面名或"新增"主按钮。
+- `page_header(theme, title, subtitle, actions)` 只用于**多步骤/子视图**的英雄区（例如未来详情页），且 `title` 不得等于 `Page::label()`。
+- 当前 8 个页面的内容区用 `section_title` 分节；Phase 4 若为某页加"新增"按钮，必须放在顶栏 `quick_add`，不能另起一个同义主按钮。
 
 #### 3.1.3 Content frame
 
@@ -284,25 +303,25 @@ API：`ui::components::button::{primary, ghost, danger, icon_only, link}`。每�
 | `secondary` | `secondary` | `secondary_foreground` | 1px `border` | `secondary` + alpha +0.06 | alpha +0.10 | 36 | 16 |
 | `ghost` | transparent | `foreground` | — | `list_hover` | `list_active` | 36 | 12 |
 | `danger` | `danger` | `danger_foreground` | — | alpha +0.08 | alpha +0.14 | 36 | 16 |
-| `icon_only` | transparent | `muted_foreground` | — | `list_hover` | `list_active` | 32×32 | 0 |
-| `link` | transparent | `accent` | — | underline | — | 24 | 4 |
+| `icon_only` | transparent（ghost） | gpui-kit ghost 默认 | — | `list_hover` | `list_active` | 32×32 | 0 |
+| `link` | transparent（link） | gpui-kit link 默认 | — | underline | — | 24 | 4 |
 
 - **Icon-only** 默认 hover 背景 `list_hover`、active 背景 `primary.with_alpha(0.18)`，用于顶栏切换主题、关闭等。
-- 所有按钮文字 `font_size: label (14, weight 600)`；图标 14px，与文字间距 6px。
-- **圆角**：`rounded_lg` (14px)。
+- 文字走 gpui-kit Medium 尺寸（约 14/600）；图标 14px。
+- **圆角**：`rounded_lg` (14px)；icon_only 为 10px。
 - **Motion**：按下时 `transform: scale(0.97)` 持续 80ms；松手回弹。
 
 ### 3.3 Nav item（侧栏导航项）
 
-API：`ui::components::nav_item`。Anatomy：`[icon 14px] [label 14/600] [badge?]`。
-- 默认高度 36px，左右 padding 12px；active 左侧 3px 圆角竖条 `primary`（用 `border_l_3px` 渲染，等价视觉）。
-- Badge：右上，min 18×18 圆，bg `danger`/`warning`，文字 11px 白字 600。
+API：`ui::components::nav_item::nav_item(theme, id, icon, label, active, badge: Option<(usize, Hsla)>, on_click)`。Anatomy：`[icon 14px] [label 14/600] [badge?]`。
+- 默认高度 36px，左右 padding 12px；active 左侧 3px 圆角竖条 `primary`，图标与文字均为 `primary`。
+- Badge：min 18×18 圆；`badge` 的第二项是**语义色**（过期 `danger`、待打卡 `warning`），与 active 无关；文字 11/700 自动选白/墨保证 ≥4.5:1。
 - 点击整行触发 on_click（不是图标）。
-- test-support id：`ui:eid("nav", p.label())`（保持与 Phase 2 一致，QA 可继续使用）。
+- test-support id：`eid("nav", p.label())`（保持与 Phase 2 一致，QA 可继续使用）。
 
 ### 3.4 Sync 状态 pill
 
-API：`ui::components::sync_pill(status: &Status)`。Anatomy：圆角胶囊 `rounded_full`，高 24px，padding-x 10px，左侧 6px 圆点（颜色随状态），右侧 12px 文字。
+API：`ui::components::sync_pill::sync_pill(theme, id, status: &Status, on_click)`；侧栏用 `sync_indicator_compact(theme, id, status, on_click)`。Anatomy：圆角胶囊 `rounded_full`，高 24px，padding-x 10px，左侧 6px 圆点（颜色随状态），右侧 12px 文字。
 
 | 状态 | 文字 | 点颜色 | 背景 |
 |---|---|---|---|
@@ -328,76 +347,77 @@ API：`ui::components::tab_chips(items: &[(&str, T)], selected: T, on_change)`�
 ### 3.6 Tag / Badge / Chip
 
 API：
-- `ui::components::tag(text, accent: Hsla)`：圆角胶囊 22px 高，padding-x 10，bg `accent.with_alpha(0.18)`，文字 12/600 `accent`。
-- `ui::components::badge(count: usize, accent: Hsla)`：圆形 18×18，圆点风格，文字 11/700 白字。
-- `ui::components::chip(text, accent: Hsla)`：与 tag 视觉相似但更小（20px 高），用于 inline 标签。
+- `ui::components::tag::tag(theme, text, accent: Hsla)`：圆角胶囊 22px 高，padding-x 10，bg `accent.with_alpha(0.18)`，文字 12/600；文字色优先 accent，若在 tint 上 <4.5 则沿同色相加深/提亮（兜底墨/纸白）。
+- `ui::components::badge(count: usize, accent: Hsla)`：圆形 18×18，文字 11/700；文字色自动在白/墨里取对比度更高者（浅色芒果黄、深色亮橙都 ≥4.5）。
+- `ui::components::chip(theme, text, accent: Hsla)`：与 tag 视觉相似但更小（20px 高）。
+- `ui::components::chip_with_filled(text, color, filled)`：旧签名兼容层（views 在用）；filled=true 实心，文字同样自适应。
 
 差异：tag 用在卡片标题旁表示分类（"补习"/"校外"），chip 用在行内描述后（"每天 · 累计 0 次"），badge 用在导航/计数。
 
 ### 3.7 卡片（Card variants）
 
-API：`ui::components::card(variant, title?, subtitle?, content)`，variant ∈ {`default`, `flat`, `outlined`, `accent(color)`}。
+API：`ui::components::card::card_with_theme(theme, variant, title?, subtitle?, content)`，variant ∈ {`Default`, `Flat`, `Outlined`, `Accent(color)`, `Hero`}。**没有**不传 theme 的同名 `card`（颜色无法正确解析）。
 
 | 变体 | bg | border | 圆角 | shadow | 用途 |
 |---|---|---|---|---|---|
-| `default` | `panel` | 1px `border` | `lg` (14) | none | 标准卡片 |
-| `flat` | `transparent` | — | — | none | 嵌入父容器（如 dashboard 时间轴） |
-| `outlined` | `surface` | 2px `border` | `lg` | none | 强调分组 |
-| `accent(c)` | `c.with_alpha(0.10)` | 1px `c.with_alpha(0.4)` | `lg` | none | 课程块/统计高亮 |
-| `card_hero` | `panel` | 1px `border` | `xl` (20) | `shadow_md` | dashboard 顶部 4 个统计卡 |
+| `Default` | `panel` | 1px `border` | `lg` (14) | none | 标准卡片 |
+| `Flat` | `transparent` | — | — | none | 嵌入父容器（如 dashboard 时间轴） |
+| `Outlined` | `surface` | **2px** `border` | `lg` | none | 强调分组 |
+| `Accent(c)` | `c.with_alpha(0.10)` | 1px `c.with_alpha(0.4)` | `lg` | none | 课程块/统计高亮 |
+| `Hero` | `panel` | 1px `border` | `xl` (20) | **`shadow_md`** | dashboard 顶部 4 个统计卡 |
 
-- 标题 `subtitle` token，副标题 `body_sm` `muted_foreground`；内容区域 padding-top 12，padding-x/padding-bottom 继承卡片本身（默认 16）。
+- 标题 17/600 `foreground`，副标题 14/400 `muted_foreground`；内边距 16，标题区与内容间距 12。
 - **hover**：default 卡片 hover 时 `border_color: border_strong`，不变 shadow。
-- `card_hero` 用于 dashboard 4 个统计卡，有 shadow 表达"重要数据"。
+- `Hero` 用于 dashboard 4 个统计卡，有 shadow 表达"重要数据"。
 
 ### 3.8 Stat tile
 
-API：`ui::components::stat_tile(label, value, hint?, accent: Hsla, icon: Option<IconName>)`。用于 dashboard 顶部 4 块。
+API：`ui::components::stat_tile::stat_tile(theme, label, value, hint?, accent: Hsla, icon: Option<IconName>)`。用于 dashboard 顶部 4 块。
 - 高度 `min_h: 108`，padding 16。
-- 顶部：左侧 label `caption` `muted_foreground`，右侧 icon `accent` 18px。
-- 中部：value `stat` token (32/700) `foreground`。
-- 底部：hint `caption` `muted_foreground`。
+- 顶部：左侧 label 12 `muted_foreground`，右侧 icon `accent` 18px。
+- 中部：value 32/700 `foreground`。
+- 底部：hint 12 `muted_foreground`。
 - 圆角 `rounded_xl` (20)，bg `panel`，1px `border`。
 
 ### 3.9 List row
 
-API：`ui::components::list_row(on_click?, leading?, title, subtitle?, trailing?)`。
-- 高度 auto，最小 48，gap 12。
-- 默认 bg `transparent`，hover bg `list_hover`，active bg `list_active`（按下），圆角 `rounded_md`。
+API：`ui::components::list_row::list_row(theme, id, on_click?, leading?, title, subtitle?, trailing?)`。
+- 高度 auto，最小 48，gap 12，padding-x 12。
+- 默认 bg `transparent`（不叠第二层纸色），hover bg `list_hover`，active bg `list_active`（按下），圆角 `rounded_md`。
 - 用于：dashboard 今日课程时间块、课程管理/日程/提醒/备忘的列表项。
 
 ### 3.10 Progress / Streak
 
-API：`ui::components::progress(value: f32, accent: Hsla, height: 6|10)`。
+API：`ui::components::progress::progress(theme, value: f32, accent: Hsla, height: Pixels /* 6 or 10 */)`。
 - 圆角 `rounded_full`，bg `muted` 容器，`accent` 填充；用于：checkin 进度条、staple 卡片底部条。
 
-API：`ui::components::streak_badge(days: usize)`：火焰图标 + "连续 N 天"，文字 12/700 `warning`，图标 14px。
+API：`ui::components::progress::streak_badge(theme, days: usize)`：火焰图标 + "连续 N 天"，文字 12/700 `warning`（`warning` 在 panel 上 ≥5:1）。
 
 ### 3.11 Empty state
 
-API：`ui::components::empty_state(variant, icon, title, description?, action?)`。variants:
-- `illustrated`：用于整页空态（dashboard/memos/reminders）。容器 320×240，居中，图标 56px `muted_foreground`，标题 `subtitle` `foreground`，描述 `body_sm` `muted_foreground`，底部 action 按钮。
-- `compact`：用于列表内空态。容器 padding-y 24，icon 32px，标题 `body_emph`，描述 `caption`。
-- `celebratory`：用于"全部完成"（checkin 全部 done）。图标 `Flame` 56px `warning`，标题更欢快，加 1 颗星 `Sparkles` 在右上 30°。
+API：`ui::components::empty_state::empty_state(theme, variant, icon, title, description?, action?)`。variants:
+- `Illustrated`：用于整页空态（dashboard/memos/reminders）。容器 320×240，居中，图标 56px `muted_foreground`，标题 20/600 `foreground`，描述 14 `muted_foreground`，底部 action 按钮。
+- `Compact`：用于列表内空态。容器 padding-y 24，icon 32px，标题 15/600，描述 12。
+- `Celebratory`：用于"全部完成"（checkin 全部 done）。**固定 `IconName::Sparkle` 56px `warning`**，右上角再叠一颗 20px `Sparkle`，标题 22/700。
 - 文案示例见 §1.3。
 - Phase 4 不得自定义空态结构，必须用此组件。
 
 ### 3.12 Overlay / Dialog / Backdrop
 
 API：
-- `ui::components::overlay(content)`：全屏绝对定位 backdrop + 居中容器。backdrop `foreground.with_alpha(0.32)`（亮色）/ `0.55`（暗色）。容器 `bg: panel`、`rounded_2xl` (28)、`shadow_lg`、padding 24、min-width 420、max-width 560。**自带淡入 180ms + scale(0.96→1)**。
-- `ui::components::dialog(title, body, footer)`：基于 `overlay`，顶部 title `subtitle`，底部按钮行右对齐。
-- `ui::components::alert_dialog(title, description, ok_label, cancel_label, on_ok)`：基于 `Dialog` 的简化版，用于删除确认等。
-- `ui::components::first_login_prompt(...)`：**专属三选一首登**——结构详见 §3.13。
+- `ui::components::overlay::overlay(theme, content)`：全屏绝对定位 backdrop + 居中容器。backdrop 直接用 `theme.overlay`（亮色 `foreground` α0.32 / 暗色 α0.55，`ThemeConfig` 以 `#RRGGBBAA` 保存）。容器 `bg: panel`、`rounded_2xl` (28)、大阴影、border、padding 24、min-width 420、max-width 560。
+- `dialog(theme, title, body, footer)`：基于 `overlay` 内容的列布局，顶部 title 17/600，底部按钮行右对齐。
+- `alert_dialog(theme, id_prefix, title, description, ok_label, cancel_label, ok_variant, on_ok, on_cancel)`：基于 `dialog`；`id_prefix` 生成唯一 id（`{prefix}:ok` / `{prefix}:cancel`），cancel 必须接真实关闭回调。
+- `first_login_prompt(theme, probe, on_choice)`：**专属三选一首登**——结构详见 §3.13。
 
 ### 3.13 First-login dialog（首登三选一）
 
-保留现有 `App::first_login_prompt` 逻辑。视觉规格：
-- 用 §3.12 `dialog` 包装；title "首次登录：云端与本地都有数据"。
-- body 上半部分：列出云端各实体数量（"课程 × 3、课表 × 17、日程 × 2"），用 `card(variant=accent(c=accent), …)` 列出。
-- body 下半部分：一段 `body_sm` 警示文字（"「本地覆盖云端」会为云端独有数据推送删除（墓碑）。"）。
-- footer：3 个按钮。合并（推荐）= primary；其余两个 = secondary。
-- 容器宽度 480，高度 auto。
+保留现有 `App::first_login_prompt` 逻辑；渲染已统一走 §3.12 组件。视觉规格：
+- 用 §3.12 `dialog` 包装；title "首次登录：云端与本地都有数据"；容器宽 480。
+- body 上半部分：列出云端各实体数量（"课程 × 3、课表 × 17、日程 × 2"），用 accent tint 卡片列出。
+- body 下半部分：一段 12px 警示文字（"「本地覆盖云端」会为云端独有数据推送删除（墓碑）。"）。
+- footer：合并（推荐）= primary；云端覆盖本地 / 本地覆盖云端 = secondary；右侧 24px 高 link 按钮"稍后决定"（`FirstLoginAction::Cancel`，只关窗不发策略）。
+- 稳定 id：`first-login:ok` / `first-login:cloud` / `first-login:local` / `first-login:cancel`。
 
 ### 3.14 Form field row
 
@@ -422,7 +442,7 @@ dashboard "本周课时分布" 当前手写柱形图。Phase 4 V1 **可保留手
 打卡勾选触发。Spec：
 - 触发：`on_click` → 设置 done → 立刻在打卡项上 spring 一下：`scale(1 → 1.06 → 1)` 280ms ease_out_back。
 - 同时勾选圆环 `success` 实心填充从 0% → 100% 在 200ms 内。
-- **若当日所有打卡任务完成**：触发"庆祝瞬间"——中心 `Sparkles` icon 浮现 + scale(0 → 1) 320ms + rotate(0 → 30deg) 400ms；同时背景从 `surface` → `success.with_alpha(0.08)` 在 600ms 内淡入。1200ms 后回淡至 surface。
+- **若当日所有打卡任务完成**：触发"庆祝瞬间"——中心 `Sparkle` icon 浮现 + scale(0 → 1) 320ms + rotate(0 → 30deg) 400ms；同时背景从 `surface` → `success.with_alpha(0.08)` 在 600ms 内淡入。1200ms 后回淡至 surface。
 - **reduce-motion**：跳过所有 scale/rotate，只保留颜色变化。
 
 ### 3.18 Page transition（页面切换淡入）
@@ -523,10 +543,27 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 5.1 对比度（WCAG AA）
 
-- 普通文字 `foreground` on `surface/panel`：≥7:1（亮色） / ≥8:1（暗色）。
-- `muted_foreground` on `surface`：≥4.5:1（亮色） / ≥5:1（暗色）。
-- 按钮文字 `primary_foreground` on `primary`：≥4.5:1（亮色 + 亮色下浮点数都满足）。
-- `warning_foreground`（暖棕）在 `warning`（芒果黄）底上：⚠️ 4.0:1 临界，**仅用于大字号（≥18px）或加粗**。在 chip/徽标中使用 12/600 + 足够 padding 来保证实际命中区域不模糊。
+所有数字由 `theme::contrast_ratio`（WCAG 2.1 相对亮度）与 `ui::components::tag` 的自适应选色共同保证，测试见 `theme::tests::wcag_aa_contrast_on_filled_buttons`、`tag::tests::*`。
+
+| 前景 / 背景 | 亮色 | 暗色 | 阈值 |
+|---|---|---|---|
+| `foreground` on `surface` | **13.96:1** | **14.65:1** | ≥7 |
+| `foreground` on `panel` | **14.68:1** | **13.08:1** | ≥7 |
+| `muted_foreground` on `surface` | **4.57:1** | **6.40:1** | ≥4.5 |
+| `muted_foreground` on `panel` | **4.80:1** | **5.72:1** | ≥4.5 |
+| `primary_foreground` on `primary` | **7.10:1**（深棕 ink） | **9.08:1**（深棕） | ≥4.5 |
+| `primary_foreground` on `primary_hover` | 5.96:1 | — | ≥4.5 |
+| `primary_foreground` on `primary_active` | 4.57:1 | — | ≥4.5 |
+| `accent_foreground` on `accent` | **4.74:1**（白） | **8.43:1**（深蓝） | ≥4.5 |
+| `success_foreground` on `success` | **4.69:1**（白） | **8.64:1** | ≥4.5 |
+| `warning_foreground` on `warning` | **5.15:1**（白） | **8.80:1** | ≥4.5 |
+| `danger_foreground` on `danger` | **7.60:1**（白） | **7.36:1** | ≥4.5 |
+| `secondary_foreground` on `secondary` | **8.26:1** | **10.33:1** | ≥4.5 |
+| badge text（自动选白/墨）on `danger` | **7.60:1** | **7.69:1** | ≥4.5 |
+| badge text（自动选白/墨）on `warning` | **5.15:1** | **11.86:1** | ≥4.5 |
+| `streak_badge` warning on panel | 5.03:1 | 10.16:1 | ≥4.5 |
+
+**策略**：亮色对饱和色使用加深档 fill + 白字；主橙保留亮色但文字用深棕 ink。暗色使用提亮 fill + 深色字。`tag` / `filled chip` / `badge` 不写死白字——按背景亮度自动在暖墨/纸白间选择，半透明 tint 先尝试 accent 本身、不足则同色相调整。历史上"浅色芒果黄 + 白字 1.9:1"的问题已由 `text_on_fill` 修复。
 
 ### 5.2 触控目标
 
@@ -557,89 +594,96 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ## 6. 组件 API Freeze（Phase 4 必须遵守）
 
-Phase 4 三条 lane 只能使用以下公开 API。**签名与命名是契约**——任何偏离需要回到本文件更新签名再改代码。
+Phase 4 三条 lane 只能使用以下公开 API。**签名与命名是契约**——本节的每一行都从
+`src/` 真实签名抄录；任何偏离需要回到本文件更新签名再改代码。
 
 ### 6.1 `src/theme.rs`
 
-- `pub fn init(cx: &mut App)`：装载应用主题（调一次，幂等）。可在 `lib.rs::run()` 和 `tests/support::Harness::new()` 中调用。
-  - 内部会把 CoursePlan `ThemeConfig` 装入 `theme.light_theme` / `theme.dark_theme`，让任何 `Theme::change(mode)` 加载我们的配置而不是 gpui-component 默认；并调一次 `apply_for_mode` 写 `theme.colors`。
-- `pub fn apply_for_mode(cx: &mut App)`：直接把 `colors / radius / font / motion` 写入 Theme 全局——`Theme::change` 之后必须再调一次（或依赖 `init` 后的副作用）以保证 `theme.colors` 是 CoursePlan 调色板。测试 harness 与 `toggle_mode` 都显式调用。
-- `pub fn toggle_mode(window: Option<&mut Window>, cx: &mut App)`：切换 ThemeMode（封装 `Theme::change` + `apply_for_mode`）。
+```rust
+pub fn init(cx: &mut App)                      // 幂等；安装 light/dark ThemeConfig + apply
+pub fn apply_for_mode(cx: &mut App)            // 直接写 colors/tokens/radius/font/motion
+pub fn toggle_mode(window: Option<&mut Window>, cx: &mut App)
+```
+
+`init` 把 CoursePlan `ThemeConfig` 装入 `theme.light_theme` / `theme.dark_theme`，因此直接
+`Theme::change(mode)` 也不会回退到 gpui-component 默认色。`theme_config_colors_from` 的
+键集合 / alpha 由 `theme::tests::theme_config_keys_match_vendor_schema` 与
+`direct_theme_change_preserves_all_semantic_fields` 锁定。
 
 ### 6.2 `src/ui/mod.rs`
 
-```
+```rust
 pub mod tokens;
 pub mod palette;
 pub mod motion;
 pub mod components;
 pub mod form;
 pub mod select;
-pub mod widgets;  // 兼容层（薄壳）
+pub mod widgets;  // 兼容层（Phase 4 逐步删除）
 ```
 
 ### 6.3 `src/ui/tokens.rs`
 
-```
-// 颜色（直接 re-export 主题字段 + 派生别名）
-pub mod color {
-    pub const SURFACE: ...; pub const PANEL: ...;
-    // 这些是**值**，不是函数；Phase 4 直接引用
-    // 推荐写法：cx.theme().surface / cx.theme().primary，避免硬编码
-}
-
-// 尺寸
-pub const SPACE_XS: Pixels = px(4.);
-pub const SPACE_SM: Pixels = px(8.);
-pub const SPACE_MD: Pixels = px(12.);
-pub const SPACE_LG: Pixels = px(16.);
-pub const SPACE_XL: Pixels = px(20.);
-pub const SPACE_2XL: Pixels = px(24.);
-pub const SPACE_3XL: Pixels = px(32.);
-
-// 圆角
-pub const RADIUS_SM: Pixels = px(6.);
-pub const RADIUS_MD: Pixels = px(10.);
-pub const RADIUS_LG: Pixels = px(14.);
-pub const RADIUS_XL: Pixels = px(20.);
-pub const RADIUS_2XL: Pixels = px(28.);
-pub const RADIUS_FULL: Pixels = px(9999.);
-
-// 图标尺寸
-pub const ICON_XS: Pixels = px(12.);
-pub const ICON_SM: Pixels = px(14.);
-pub const ICON_MD: Pixels = px(18.);
-pub const ICON_LG: Pixels = px(22.);
-pub const ICON_XL: Pixels = px(32.);
-
-// 高度
+```rust
+pub const SPACE_XS/XS...: Pixels;   // SPACE_XS=4, SM=8, MD=12, LG=16, XL=20, 2XL=24, 3XL=32
+pub const RADIUS_SM/MD/LG/XL/2XL/FULL: Pixels; // 6/10/14/20/28/9999
 pub const BUTTON_H: Pixels = px(36.);
 pub const ICON_BUTTON_H: Pixels = px(32.);
 pub const INPUT_H: Pixels = px(36.);
 pub const NAV_ITEM_H: Pixels = px(36.);
+pub const SYNC_PILL_H: Pixels = px(24.);
+pub const SIDEBAR_BRAND_H: Pixels = px(72.);
+pub const SIDEBAR_FOOTER_H: Pixels = px(56.);
 pub const TOPBAR_H: Pixels = px(56.);
 pub const SIDEBAR_W: Pixels = px(256.);
+pub const ICON_XS/SM/MD/LG/XL: Pixels; // 12/14/18/22/32
+pub const COURSE_TINT_ALPHA_LIGHT: f32 = 0.16;
+pub const COURSE_TINT_ALPHA_DARK: f32 = 0.22;
+pub const SYNC_PULSE_MS: u64 = 1200;
+
+pub mod text {
+    pub const CAPTION/LABEL_SM/BODY_SM/BODY/BODY_EMPH/LABEL/SUBTITLE/TITLE/DISPLAY/STAT: Pixels;
+    // 12/13/14/15/15/14/17/20/28/32
+}
 ```
+
+**没有 `tokens::color`**：颜色是主题态，必须从 `&Theme` 读取（`theme.background`、`theme.primary`…），
+禁止在 token 层固化颜色。
 
 ### 6.4 `src/ui/palette.rs`
 
-- `pub const COURSE_PALETTE: [Hsla; 8]`：8 色调色板（§2.6）。
-- `pub fn palette_at(index: usize) -> Hsla`：取索引对应色。
-- `pub fn tint(color: Hsla, theme: &Theme) -> Hsla`：填充淡底。
+```rust
+pub const COURSE_PALETTE: [Hsla; 8];       // 亮色盘
+pub const COURSE_PALETTE_DARK: [Hsla; 8];  // 暗色盘
+pub fn palette_at(index: usize) -> Hsla;                 // 无主题兼容；新代码别用
+pub fn palette_at_for(index: usize, theme: &Theme) -> Hsla; // Phase 4 必须用这个
+pub fn tint(color: Hsla, theme: &Theme) -> Hsla;
+```
 
 ### 6.5 `src/ui/motion.rs`
 
-- `pub fn pop_in(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Transition`：进入（透明度 0→1 + Y 位移）。
-- `pub fn pop_out(...)`：退出。
-- `pub fn spring_bounce(window: &mut Window, cx: &mut App) -> Spring`：庆祝弹簧。
-- `pub fn page_enter_animation(...)`：页面切换。
+```rust
+pub fn page_enter_easing() -> Easing;
+pub fn page_exit_easing() -> Easing;
+pub fn move_easing() -> Easing;
+pub fn page_enter_duration(reduce_motion: bool) -> Duration;
+pub fn page_enter_animation() -> Animation;   // 260ms + easing_enter，with_animation 用
+pub fn bounce_spring(reduce_motion: bool) -> Spring;
+pub fn tokens(theme: &Theme) -> &MotionTokens;
+```
 
-### 6.6 `src/ui/components/` 模块（每个 .rs 一个组件族）
+**不存在** `pop_in` / `pop_out` / `spring_bounce`：Phase 3 冻结时它们未实现，已从 API 移除。
+页面转场已由 `app.rs` 用 `with_animation` + `page_enter_animation()` 落地。
+
+### 6.6 `src/ui/components/` 模块
+
+全部组件第一个参数是 `theme: &Theme`（按钮族除外——按钮颜色由已安装的 ThemeConfig
+经 gpui-kit ButtonVariants 解析，签名保持无 theme）。
 
 #### `button.rs`
 
-```
-pub fn primary(id: ElementId, label: impl Into<SharedString>, on_click: impl Fn(...) + 'static) -> Button;
+```rust
+pub fn primary(id, label, on_click) -> Button;
 pub fn primary_with_icon(id, label, icon: IconName, on_click) -> Button;
 pub fn secondary(id, label, on_click) -> Button;
 pub fn secondary_with_icon(id, label, icon, on_click) -> Button;
@@ -647,160 +691,190 @@ pub fn ghost(id, label, on_click) -> Button;
 pub fn ghost_with_icon(id, label, icon, on_click) -> Button;
 pub fn danger(id, label, on_click) -> Button;
 pub fn danger_with_icon(id, label, icon, on_click) -> Button;
-pub fn icon_only(id, icon: IconName, tooltip: impl Into<SharedString>, on_click) -> Button;
+pub fn icon_only(id, icon, tooltip, on_click) -> Button;
 pub fn link(id, label, on_click) -> Button;
 ```
 
-实现细节：内部走 `gpui_kit::component::button::Button::new(id).primary()/secondary()/...compact().label(...).icon(...).on_click(...)`。每个变体强制注入正确颜色（确保不漏 `.text_color`）。
+统一尺寸：文字按钮 36px 高 / padding-x 16（ghost 12）/ 圆角 14；icon_only 32×32 / 圆角 10；
+link 24px / padding-x 4。
 
 #### `nav_item.rs`
 
-```
-pub fn nav_item(id: ElementId, icon: IconName, label: impl Into<SharedString>, active: bool, badge: Option<usize>, on_click) -> impl IntoElement;
+```rust
+pub fn nav_item(
+    theme: &Theme,
+    id: ElementId,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    active: bool,
+    badge: Option<(usize, Hsla)>,   // (count, 语义色)
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement;
 ```
 
 #### `sync_pill.rs`
 
-```
-pub fn sync_pill(status: &Status, on_click: impl Fn(...) + 'static) -> impl IntoElement;
-pub fn sync_indicator_compact(status: &Status) -> impl IntoElement;  // 侧栏 footer 用
+```rust
+pub fn sync_pill(theme: &Theme, id: impl Into<ElementId>, status: &Status,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement;
+pub fn sync_indicator_compact(theme: &Theme, id: impl Into<ElementId>, status: &Status,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement;
 ```
 
 #### `tab_chips.rs`
 
-```
-pub fn tab_chips<T: Copy + PartialEq + 'static>(id_prefix: &str, items: Vec<(&str, T)>, selected: T, on_change: impl Fn(T, &mut Window, &mut App) + 'static) -> impl IntoElement;
+```rust
+pub fn tab_chips<T, F>(
+    theme: &Theme,
+    id_prefix: &str,
+    items: &[(&str, T)],
+    selected: T,
+    on_change: F,
+) -> impl IntoElement
+where T: Copy + PartialEq + 'static,
+      F: Fn(T, &mut Window, &mut App) + Clone + 'static;
 ```
 
 #### `tag.rs`
 
-```
-pub fn tag(text: impl Into<SharedString>, accent: Hsla) -> impl IntoElement;
+```rust
+pub fn tag(theme: &Theme, text: impl Into<SharedString>, accent: Hsla) -> impl IntoElement;
 pub fn badge(count: usize, accent: Hsla) -> impl IntoElement;
-pub fn chip(text: impl Into<SharedString>, accent: Hsla) -> impl IntoElement;
+pub fn chip(theme: &Theme, text: impl Into<SharedString>, accent: Hsla) -> impl IntoElement;
+pub fn chip_with_filled(text, color: Hsla, filled: bool) -> impl IntoElement; // back-compat
 ```
 
 #### `card.rs`
 
-```
+```rust
 pub enum CardVariant { Default, Flat, Outlined, Accent(Hsla), Hero }
-pub fn card(variant: CardVariant, title: Option<impl Into<SharedString>>, subtitle: Option<impl Into<SharedString>>, content: impl IntoElement) -> impl IntoElement;
+pub fn card_with_theme(
+    theme: &Theme,
+    variant: CardVariant,
+    title: Option<impl Into<SharedString>>,
+    subtitle: Option<impl Into<SharedString>>,
+    content: impl IntoElement,
+) -> impl IntoElement;
 ```
 
-**Back-compat shim**：`pub fn card(theme: &Theme, title, subtitle, content) -> impl IntoElement`（保留旧签名给 views 直接调用，内部映射到 `CardVariant::Default`）。
+**没有** `card(variant, title, subtitle, content)`（不带 theme 的同名函数已删除）。
 
 #### `stat_tile.rs`
 
-```
-pub fn stat_tile(label, value, hint: Option<...>, accent: Hsla, icon: Option<IconName>) -> impl IntoElement;
+```rust
+pub fn stat_tile(theme: &Theme, label, value, hint: Option<impl Into<SharedString>>,
+    accent: Hsla, icon: Option<IconName>) -> impl IntoElement;
 ```
 
 #### `list_row.rs`
 
-```
-pub fn list_row(on_click: Option<impl Fn(...) + 'static>, leading: Option<impl IntoElement>, title: impl Into<SharedString>, subtitle: Option<...>, trailing: Option<impl IntoElement>) -> impl IntoElement;
+```rust
+pub fn list_row(
+    theme: &Theme,
+    id: impl Into<ElementId>,
+    on_click: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    leading: Option<impl IntoElement>,
+    title: impl Into<SharedString>,
+    subtitle: Option<impl Into<SharedString>>,
+    trailing: Option<impl IntoElement>,
+) -> impl IntoElement;
 ```
 
 #### `progress.rs`
 
-```
-pub fn progress(value: f32, accent: Hsla, height: Pixels /* 6 or 10 */) -> impl IntoElement;
-pub fn streak_badge(days: usize) -> impl IntoElement;
+```rust
+pub fn progress(theme: &Theme, value: f32, accent: Hsla, height: Pixels) -> impl IntoElement;
+pub fn streak_badge(theme: &Theme, days: usize) -> impl IntoElement;
 ```
 
 #### `empty_state.rs`
 
-```
+```rust
 pub enum EmptyVariant { Illustrated, Compact, Celebratory }
-pub fn empty_state(variant: EmptyVariant, icon: IconName, title: impl Into<SharedString>, description: Option<...>, action: Option<impl IntoElement>) -> impl IntoElement;
+pub fn empty_state(theme: &Theme, variant: EmptyVariant, icon: IconName,
+    title: impl Into<SharedString>, description: Option<impl Into<SharedString>>,
+    action: Option<impl IntoElement>) -> impl IntoElement;
 ```
 
-**Back-compat shim**：`pub fn empty_state(theme: &Theme, icon: IconName, title, description: Option<...>) -> impl IntoElement`（保留旧签名）。
+兼容 shim 在 `ui::widgets::empty_state(theme, icon, title, description)`，内部固定 Compact。
 
 #### `overlay.rs`
 
-```
-pub fn overlay(content: impl IntoElement) -> impl IntoElement;
-pub fn dialog(title: impl Into<SharedString>, body: impl IntoElement, footer: Option<impl IntoElement>) -> impl IntoElement;
-pub fn alert_dialog(title, description, ok_label, cancel_label, on_ok: impl Fn(...) + 'static) -> impl IntoElement;
-pub fn first_login_prompt(round_id: u64, probe: &ProbeSummary, on_choice: impl Fn(FirstLoginPolicyKind, &mut Window, &mut App) + 'static) -> impl IntoElement;
+```rust
+pub fn overlay(theme: &Theme, content: impl IntoElement) -> impl IntoElement;
+pub fn dialog(theme: &Theme, title: impl Into<SharedString>, body: impl IntoElement,
+    footer: Option<impl IntoElement>) -> impl IntoElement;
+pub fn alert_dialog(
+    theme: &Theme, id_prefix: &str, title, description, ok_label, cancel_label,
+    ok_variant: AlertVariant,
+    on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement;
+pub fn first_login_prompt(theme: &Theme, probe: &ProbeSummary,
+    on_choice: impl Fn(FirstLoginAction, &mut Window, &mut App) + Clone + 'static) -> impl IntoElement;
+pub enum FirstLoginAction { Merge, CloudWins, LocalWins, Cancel }
+pub fn section_title(theme: &Theme, text, trailing: Option<AnyElement>) -> impl IntoElement;
 ```
 
-**Back-compat shim**：`pub fn section_title(theme: &Theme, text, trailing) -> impl IntoElement`。
+#### `kv_row.rs` / `check_circle.rs`
 
-#### `kv_row.rs`
-
-```
-pub fn kv_row(key, value) -> impl IntoElement;
-```
-
-#### `check_circle.rs`
-
-```
-pub fn check_circle(done: bool, size: Pixels) -> impl IntoElement;
+```rust
+pub fn kv_row(theme: &Theme, key, value) -> impl IntoElement;
+pub fn check_circle(theme: &Theme, done: bool, size: Pixels) -> impl IntoElement;
 ```
 
 #### `page_header.rs`
 
-```
-pub fn page_header(title: impl Into<SharedString>, subtitle: Option<...>, actions: Option<impl IntoElement>) -> impl IntoElement;
-pub fn page_subtitle(page: Page, db: &Database) -> SharedString;
+```rust
+pub fn page_header(theme: &Theme, title, subtitle: Option<impl Into<SharedString>>,
+    actions: Option<impl IntoElement>) -> impl IntoElement;
+pub fn page_subtitle(page: Page, db: &Database) -> SharedString;  // 在此文件，不在 overlay.rs
 ```
 
 ### 6.7 `src/ui/widgets.rs`（Back-compat 兼容层）
 
-保留以下**薄壳包装**，views 可继续调用，内部调用 §6.6 新组件：
-
-```
-pub const PALETTE: [Hsla; 8] = palette::COURSE_PALETTE;
+```rust
+pub const PALETTE: [Hsla; 8];
 pub fn palette_at(index) -> Hsla;
-pub fn surface(theme) -> Hsla;       // = theme.surface
-pub fn panel(theme) -> Hsla;          // = theme.panel
-pub fn tint(color, theme) -> Hsla;    // = palette::tint
-pub fn eid(prefix, key) -> ElementId;
-pub fn close_editor(app, cx);         // 必备，测试依赖
-pub fn action_button(id, label, on_click);  // = components::button::ghost
-pub fn section_title(theme, text, trailing);  // = components::page_header::section_title
-pub fn card(theme, title, subtitle, content);  // = components::card::card(Default, ...)
-pub fn stat_tile(theme, label, value, hint, accent, icon);  // = components::stat_tile
-pub fn empty_state(theme, icon, title, desc);  // = components::empty_state(Compact, ...)
-pub fn chip(text, color, filled);    // = components::chip
+pub fn surface(theme) -> Hsla;
+pub fn panel(theme) -> Hsla;
+pub fn tint(color, theme) -> Hsla;
+pub fn eid(prefix: &str, key: &str) -> ElementId;   // "{prefix}:{key}"（无 "ui:" 前缀）
+pub fn close_editor(app, cx);
+pub fn action_button(id, label, on_click);
+pub fn section_title(theme, text, trailing);
+pub fn card(theme, title, subtitle: Option<..>, content);
+pub fn stat_tile(theme, label, value, hint, accent, icon);
+pub fn empty_state(theme, icon, title, description);
+pub fn chip(text, color: Hsla, filled: bool);
 pub fn kv_row(theme, key, value);
-pub fn check_circle(theme, done, size);  // = components::check_circle
-
-pub struct Skin { ... }  // 保持；views 不直接用，但 app.rs 仍可用
+pub fn check_circle(theme, done, size);
+pub struct Skin { surface, panel, sidebar, border, fg, muted, primary, primary_fg }
 ```
-
-`Skin` 字段命名不变：`surface/panel/sidebar/border/fg/muted/primary/primary_fg`，对应 `theme.{surface,panel,sidebar,border,foreground,muted_foreground,primary,primary_foreground}`。
 
 ### 6.8 测试支持 IDs（QA/Phase 4 用）
 
-shell 元素使用以下 id（必须稳定）：
+shell 元素使用以下 id（**必须稳定**；`eid` 的结果不含 `ui:` 前缀，所以这里写出最终字符串）：
 
 ```
-sidebar items:    "ui:eid(\"nav\", {page_label})"
-brand block:      "ui:eid(\"brand\", \"\")"            // 整块
-theme toggle:     "ui:eid(\"topbar\", \"theme-toggle\")"
-quick add:        "ui:eid(\"topbar\", \"quick-add\")"
-sync pill:        "ui:eid(\"topbar\", \"sync-pill\")"
-sync pill comp:   "ui:eid(\"sidebar\", \"sync-indicator\")"
-first-login ok:   "ui:eid(\"first-login\", \"ok\")"
-first-login cancel:"ui:eid(\"first-login\", \"cancel\")"
+sidebar items:     eid("nav", page_label)          → "nav:今日概览" 等
+brand block:       "ui:brand:"                     // 整块
+theme toggle:      "ui:topbar:theme-toggle"
+quick add:         "ui:topbar:quick-add"
+sync pill:         "ui:topbar:sync-pill"
+sidebar sync:      "ui:sidebar:sync-indicator"     // 可点击 → 设置页
+first-login merge: "first-login:ok"
+first-login cloud: "first-login:cloud"
+first-login local: "first-login:local"
+first-login cancel:"first-login:cancel"
 ```
 
 ### 6.9 图标注册（写入 `src/assets.rs`）
 
-下列新增图标必须加入 `APP_ICONS` 与 `icon_assets!` 块（如不在默认集中）：
-- `Sparkles`（庆祝用）
-- `LogIn` / `LogOut`（同步状态可选）
-- `MoreHorizontal`（行尾更多操作）
-- `CircleCheck` / `CircleCheckBig`（已完成标记，可与现有 `Check` 复用）
-- `CircleDashed`（未完成标记）
-- `Pencil`（编辑备用，目前用 `action_button` 文字"编辑"）
-
-`tests/icons.rs` 会扫描源码 → 加图标前先加 APP_ICONS；漏一个即失败。
-
----
+Phase 3 已登记：`CalendarDays / Clock / Flame / GraduationCap / ListTodo / NotebookPen /
+Sparkle / Target / Trash`（`Sparkle` 为单数——gpui-kit 的真实 `IconName` 变体；
+DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须先加入
+`APP_ICONS` 与 `icon_assets!`；`tests/icons.rs` 会扫描源码兜底。
 
 ## 7. 已冻结的"做什么 / 不做什么"
 
@@ -823,13 +897,21 @@ first-login cancel:"ui:eid(\"first-login\", \"cancel\")"
 
 ## 8. 验证清单（Gate 3 证据）
 
-- [ ] `target/visual/*.png` 8 页 × 浅/深 = 16 张 + 至少 1 张交互（smoke-course-editor）全部刷新。
-- [ ] `cargo test --workspace` 全绿（86 个测试，含 tests/icons.rs 自检通过；其中 theme::tests 8 个：调色板构造、motion 范围、hex round-trip、Hair Light/Dark 直接 `Theme::change` 不丢色、toggle_mode 往返、init 不回退 gpui 默认）。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 无 warning。
-- [ ] `cargo fmt --all --check` 无 diff。
-- [ ] 切换主题：顶栏 toggle 按钮点击后浅↔深色生效，所有组件随之刷新（视觉证据：dashboard-light.png vs dashboard-dark.png 明显不同）。
-- [ ] Sidebar nav 点击切换：截图前后应有差异（Phase 4 自动覆盖；Phase 3 仅保证 shell 渲染稳定）。
-- [ ] First-login dialog：模拟 `first_login_prompt` 出现时，样式为暖纸 + 三按钮，不破逻辑。
+- [x] `target/visual/*.png` 8 页 × 浅/深 = 16 张 + 3 张交互 smoke（base / editor / after-close）全部刷新。
+- [x] `cargo test --workspace` 全绿：**102 个测试**（course-plan lib 58 + convergence 14 + icons 1 + render 3 + server 1 + server 集成 14 + sync-proto 11；0 failed / 0 ignored）。theme::tests 14 个，新增：
+  - `theme_config_keys_match_vendor_schema`（键集 + alpha）
+  - `direct_theme_change_preserves_all_semantic_fields`（全部 ThemeColor + tokens + overlay.a）
+  - `wcag_aa_contrast_on_filled_buttons`
+  - `tag::tests::{badge_text_meets_aa_on_semantic_fills, badge_text_meets_aa_on_danger_and_warning, tag_text_meets_aa_on_tints, filled_chip_text_meets_aa_including_light_fills}`
+  - `palette::tests::palette_at_for_switches_with_theme`
+  - `tests/render.rs::shell_element_ids_are_stable`（§6.8 六个稳定 id 在渲染树可查询）
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 无 warning。
+- [x] `cargo fmt --all --check` 无 diff。
+- [x] 切换主题：顶栏 toggle 按钮点击后浅↔深色生效（dashboard-light.png vs dashboard-dark.png 明显不同），直接 `Theme::change` 也不会让 overlay 变不透明。
+- [x] Sidebar nav 点击切换：nav id 保持 Phase 2 字符串；active 文字/图标均 `primary`。
+- [x] First-login dialog：走 `overlay` + `first_login_prompt` 组件（test id `first-login:ok/cloud/local/cancel`），cancel 真正关闭。
+- [x] Schedule 7 列：日列固定 `w(88px)` + 水平滚动容器（总宽 700 ≤ 1280 下的 708）；周日照样完整可见。
+- [x] 8 个课程色互不相同（`course_palette_hues_are_distinct`，亮/暗各 ≥6 个不同 hex；实际 8 个）。
 
 ---
 
@@ -839,5 +921,6 @@ first-login cancel:"ui:eid(\"first-login\", \"cancel\")"
 |---|---|---|
 | v1.0 | 2026-10-17 | Phase 3 封版（lane DS 产出） |
 | v1.1 | 2026-10-17 | Gate 3 预检修复：色相统一走 `hsl_deg(度数)`（gpui `Hsla.h ∈ [0,1)`）；暗色「嫩芽」hex 校正 `#BCDC72 → #BCDB66`（与 HSL 76/0.62/0.630 一致）；`Theme::change` 不再覆盖自有调色板（安装自定义 ThemeConfig） |
+| v1.2 | 2026-10-17 | Gate 3 修复（lane DS-2）：**hex 是唯一契约**（`hex_color()` 反算，删除 HSL 列与 `hsl_deg_a`）；亮色 canvas 回暖纸 `#FBF6EC`；饱和 fill 加深 + 白字 / 暗色提亮 + 深字，§5.1 列真实对比度并由测试锁定；`tag/badge/filled chip` 自适应选字色（去掉写死白字）；`ThemeConfig` 修 `progress.bar` 键、补 `chart.1..5`、alpha 以 `#RRGGBBAA` 保留（overlay/scrollbar/drop_target/list_active_border/table_active_border），`selection`/`list_active` α 取 vendor 上限内；JSON builder 改为 `default()` + 字段赋值；`gpui-kit` 精确锁 `=0.7.3`；组件对齐 §3（按钮 36/圆角 14、list_row 透明+hover、card Hero shadow_md / Outlined 2px / 标题 17、stat_tile min_h108+value32+icon18、empty_state 56/32+Sparkle、alert_dialog 唯一 id + 真 cancel、nav active primary、badge 语义色）；app.rs 接入 `first_login_prompt` 并删除重复枚举；页面转场 260ms 唯一 id（reduce-motion 安全）；测试 id 统一（brand/theme-toggle/quick-add/sync-pill/sidebar sync indicator 可点击）；schedule 日列固定 88px 宽 + 水平滚动修周日截断；暗色课程盘经 `palette_at_for` 可达 |
 
 任何后续调整必须更新本表并同步 §6 API Freeze。

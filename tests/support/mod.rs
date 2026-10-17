@@ -111,6 +111,9 @@ impl Harness {
 
         // 组件层初始化（主题、按键绑定、全局状态）——对应 `lib.rs::run()` 的 `init(cx)`。
         cx.update(course_plan::gpui::init);
+        // 截图管线在 reduce-motion 下取帧：页面转场（opacity 0→1）等入场动画
+        // 会直接渲染终态，PNG 才是"稳定态"而不是动画第一帧的空白。
+        cx.update(|app| app.set_reduce_motion(true));
         // 装载 CoursePlan 主题（与 `lib.rs::run()` 一致；幂等）。
         cx.update(course_plan::theme::init);
         cx.update(|app| app.set_app_identity(APP_ID, "CoursePlan"));

@@ -44,7 +44,6 @@ use crate::gpui::component::{
 use crate::gpui::{App, Hsla, SharedString, Window};
 
 use crate::prelude::WithAlpha;
-use crate::ui::palette::hsl_deg;
 
 /// 我们的 ThemeConfig name —— 注册到 ThemeRegistry 后，Theme::change
 /// 会按名字找到对应配置。
@@ -153,163 +152,171 @@ fn build_config(mode: ThemeMode) -> ThemeConfig {
 
 /// 把我们的 ThemeColor 转换为 ThemeConfigColors。
 ///
-/// `ThemeConfigColors` 末尾有 12 个私有字段（`red..cyan` 等基础色，仅 JSON 反序列化用），
-/// 不允许结构体字面量构造。所以我们走 JSON 路径：用 [`serde_json::json!`] 构造一份
-/// key-value JSON，然后 `serde_json::from_value` 反序列化为 `ThemeConfigColors`——
-/// 这样公共字段 + 私有字段都被 serde 填上，私有字段由 `Default` 接管（None）。
+/// `ThemeConfigColors` 末尾有 12 个私有字段（`base.red..base.cyan.light`），
+/// 只能在 crate 内构造。因此这里用 `ThemeConfigColors::default()` + 公共字段赋值；
+/// 私有基础色保持 `None`（`apply_config` 只用它们做缺失字段的 fallback，而本函数
+/// 把每个公共字段都显式填满）。
 ///
-/// apply_config 对每个字段的解析规则：
-/// - `apply_color!`：`try_parse_color(value)`，None 时回退到 `default_theme.<field>`
-///   （即 gpui-component `ThemeColor::light()` / `dark()` 默认值）。
-/// - 因此如果想让 CoursePlan 主题在 `Theme::change` 之后不被默认色覆盖，
-///   **必须把每个被读到的字段都填上**（apply_config 的 fallback 是 gpui 默认）。
+/// **alpha 必须保留**：`overlay`、`scrollbar_thumb`、`drop_target`、
+/// `list_active(_border)`、`selection`、`table_active(_border)` 都带透明度。
+/// 这里统一用 [`hsla_to_hex_full`] 输出 `#RRGGBBAA`；否则直接 `Theme::change`
+/// 会把对话框遮罩变成不透明色块。
 ///
-/// ThemeColor 独有但不在 `ThemeConfigColors` 中（`color`、`chart_1..5`、`overlay` 等）：
-/// 这些仍由 `theme.colors` 直接持有（apply_config 后），不影响 ThemeConfig 路径。
+/// 注意 vendor 键名：进度条是 `progress.bar.background`（不是 `progress_bar`）。
+/// 键集合由 `theme_config_keys_match_vendor_schema` 测试对
+/// `serde_json::to_value(ThemeConfigColors::default())` 锁定。
 fn theme_config_colors_from(colors: &ThemeColor) -> ThemeConfigColors {
-    use serde_json::json;
+    let mut cfg = ThemeConfigColors::default();
 
-    let hex = |h: Hsla| hsla_to_hex(h);
+    macro_rules! set_colors {
+        ($($field:ident),+ $(,)?) => {
+            $(
+                cfg.$field = Some(SharedString::from(hsla_to_hex_full(colors.$field)));
+            )+
+        };
+    }
 
-    // 构造 ThemeConfig JSON。每个字段若 Some，则被 apply_config 用 try_parse_color
-    // 解析（支持 hex 与 HSL）。None 时 apply_config 回退到 gpui 默认。
-    // 因此我们填上每个被 apply_config 读到的字段，确保 CoursePlan 色覆盖默认。
-    let value = json!({
-        "accent.background": hex(colors.accent),
-        "accent.foreground": hex(colors.accent_foreground),
-        "accordion.background": hex(colors.accordion),
-        "background": hex(colors.background),
-        "border": hex(colors.border),
-        "button.background": hex(colors.button),
-        "button.active.background": hex(colors.button_active),
-        "button.foreground": hex(colors.button_foreground),
-        "button.hover.background": hex(colors.button_hover),
-        "button.danger.background": hex(colors.button_danger),
-        "button.danger.active.background": hex(colors.button_danger_active),
-        "button.danger.foreground": hex(colors.button_danger_foreground),
-        "button.danger.hover.background": hex(colors.button_danger_hover),
-        "button.info.background": hex(colors.button_info),
-        "button.info.active.background": hex(colors.button_info_active),
-        "button.info.foreground": hex(colors.button_info_foreground),
-        "button.info.hover.background": hex(colors.button_info_hover),
-        "button.primary.background": hex(colors.button_primary),
-        "button.primary.active.background": hex(colors.button_primary_active),
-        "button.primary.foreground": hex(colors.button_primary_foreground),
-        "button.primary.hover.background": hex(colors.button_primary_hover),
-        "button.secondary.background": hex(colors.button_secondary),
-        "button.secondary.active.background": hex(colors.button_secondary_active),
-        "button.secondary.foreground": hex(colors.button_secondary_foreground),
-        "button.secondary.hover.background": hex(colors.button_secondary_hover),
-        "button.success.background": hex(colors.button_success),
-        "button.success.active.background": hex(colors.button_success_active),
-        "button.success.foreground": hex(colors.button_success_foreground),
-        "button.success.hover.background": hex(colors.button_success_hover),
-        "button.warning.background": hex(colors.button_warning),
-        "button.warning.active.background": hex(colors.button_warning_active),
-        "button.warning.foreground": hex(colors.button_warning_foreground),
-        "button.warning.hover.background": hex(colors.button_warning_hover),
-        "group_box.background": hex(colors.group_box),
-        "group_box.foreground": hex(colors.group_box_foreground),
-        // group_box.title.foreground（ThemeConfigColors 独有）—— 直接复用 foreground。
-        "group_box.title.foreground": hex(colors.foreground),
-        "caret": hex(colors.caret),
-        "chart.bullish": hex(colors.chart_bullish),
-        "chart.bearish": hex(colors.chart_bearish),
-        "chart.grid": hex(colors.chart_grid),
-        "danger.background": hex(colors.danger),
-        "danger.active.background": hex(colors.danger_active),
-        "danger.foreground": hex(colors.danger_foreground),
-        "danger.hover.background": hex(colors.danger_hover),
-        "description_list.label.background": hex(colors.description_list_label),
-        "description_list.label.foreground": hex(colors.description_list_label_foreground),
-        "drag.border": hex(colors.drag_border),
-        "drop_target.background": hex(colors.drop_target),
-        "foreground": hex(colors.foreground),
-        "info.background": hex(colors.info),
-        "info.active.background": hex(colors.info_active),
-        "info.foreground": hex(colors.info_foreground),
-        "info.hover.background": hex(colors.info_hover),
-        "input.border": hex(colors.input),
-        "link": hex(colors.link),
-        "link.active": hex(colors.link_active),
-        "link.hover": hex(colors.link_hover),
-        "list.background": hex(colors.list),
-        "list.active.background": hex(colors.list_active),
-        "list.active.border": hex(colors.list_active_border),
-        "list.even.background": hex(colors.list_even),
-        "list.head.background": hex(colors.list_head),
-        "list.hover.background": hex(colors.list_hover),
-        "muted.background": hex(colors.muted),
-        "muted.foreground": hex(colors.muted_foreground),
-        "popover.background": hex(colors.popover),
-        "popover.foreground": hex(colors.popover_foreground),
-        "primary.background": hex(colors.primary),
-        "primary.active.background": hex(colors.primary_active),
-        "primary.foreground": hex(colors.primary_foreground),
-        "primary.hover.background": hex(colors.primary_hover),
-        "progress_bar.background": hex(colors.progress_bar),
-        "ring": hex(colors.ring),
-        "scrollbar.background": hex(colors.scrollbar),
-        "scrollbar.thumb.background": hex(colors.scrollbar_thumb),
-        "scrollbar.thumb.hover.background": hex(colors.scrollbar_thumb_hover),
-        "secondary.background": hex(colors.secondary),
-        "secondary.active.background": hex(colors.secondary_active),
-        "secondary.foreground": hex(colors.secondary_foreground),
-        "secondary.hover.background": hex(colors.secondary_hover),
-        "selection.background": hex(colors.selection),
-        "sidebar.background": hex(colors.sidebar),
-        "sidebar.accent.background": hex(colors.sidebar_accent),
-        "sidebar.accent.foreground": hex(colors.sidebar_accent_foreground),
-        "sidebar.border": hex(colors.sidebar_border),
-        "sidebar.foreground": hex(colors.sidebar_foreground),
-        "sidebar.primary.background": hex(colors.sidebar_primary),
-        "sidebar.primary.foreground": hex(colors.sidebar_primary_foreground),
-        "skeleton.background": hex(colors.skeleton),
-        "slider.background": hex(colors.slider_bar),
-        "slider.thumb.background": hex(colors.slider_thumb),
-        "success.background": hex(colors.success),
-        "success.foreground": hex(colors.success_foreground),
-        "success.hover.background": hex(colors.success_hover),
-        "success.active.background": hex(colors.success_active),
-        "switch.background": hex(colors.switch),
-        "switch.thumb.background": hex(colors.switch_thumb),
-        "tab.background": hex(colors.tab),
-        "tab.active.background": hex(colors.tab_active),
-        "tab.active.foreground": hex(colors.tab_active_foreground),
-        "tab_bar.background": hex(colors.tab_bar),
-        "tab_bar.segmented.background": hex(colors.tab_bar_segmented),
-        "tab.foreground": hex(colors.tab_foreground),
-        "table.background": hex(colors.table),
-        "table.active.background": hex(colors.table_active),
-        "table.active.border": hex(colors.table_active_border),
-        "table.even.background": hex(colors.table_even),
-        "table.head.background": hex(colors.table_head),
-        "table.head.foreground": hex(colors.table_head_foreground),
-        "table.foot.background": hex(colors.table_foot),
-        "table.foot.foreground": hex(colors.table_foot_foreground),
-        "table.hover.background": hex(colors.table_hover),
-        "table.row.border": hex(colors.table_row_border),
-        "title_bar.background": hex(colors.title_bar),
-        "title_bar.border": hex(colors.title_bar_border),
-        "status_bar.background": hex(colors.status_bar),
-        "status_bar.border": hex(colors.status_bar_border),
-        "warning.background": hex(colors.warning),
-        "warning.active.background": hex(colors.warning_active),
-        "warning.hover.background": hex(colors.warning_hover),
-        "warning.foreground": hex(colors.warning_foreground),
-        "overlay": hex(colors.overlay),
-        "window.border": hex(colors.window_border),
-        // 私有字段（base.red / base.blue 等 12 个）由 serde Default 接管——
-        // apply_config 不读这些字段，ThemeColor 持有 `red..cyan` 基础色。
-    });
+    // 与 vendor `ThemeConfigColors` 的公共字段一一对应（含 chart.1..5）。
+    set_colors!(
+        accent,
+        accent_foreground,
+        accordion,
+        background,
+        border,
+        button,
+        button_active,
+        button_foreground,
+        button_hover,
+        button_danger,
+        button_danger_active,
+        button_danger_foreground,
+        button_danger_hover,
+        button_info,
+        button_info_active,
+        button_info_foreground,
+        button_info_hover,
+        button_primary,
+        button_primary_active,
+        button_primary_foreground,
+        button_primary_hover,
+        button_secondary,
+        button_secondary_active,
+        button_secondary_foreground,
+        button_secondary_hover,
+        button_success,
+        button_success_active,
+        button_success_foreground,
+        button_success_hover,
+        button_warning,
+        button_warning_active,
+        button_warning_foreground,
+        button_warning_hover,
+        group_box,
+        group_box_foreground,
+        caret,
+        chart_1,
+        chart_2,
+        chart_3,
+        chart_4,
+        chart_5,
+        chart_bullish,
+        chart_bearish,
+        chart_grid,
+        danger,
+        danger_active,
+        danger_foreground,
+        danger_hover,
+        description_list_label,
+        description_list_label_foreground,
+        drag_border,
+        drop_target,
+        foreground,
+        info,
+        info_active,
+        info_foreground,
+        info_hover,
+        input,
+        link,
+        link_active,
+        link_hover,
+        list,
+        list_active,
+        list_active_border,
+        list_even,
+        list_head,
+        list_hover,
+        muted,
+        muted_foreground,
+        popover,
+        popover_foreground,
+        primary,
+        primary_active,
+        primary_foreground,
+        primary_hover,
+        progress_bar,
+        ring,
+        scrollbar,
+        scrollbar_thumb,
+        scrollbar_thumb_hover,
+        secondary,
+        secondary_active,
+        secondary_foreground,
+        secondary_hover,
+        selection,
+        sidebar,
+        sidebar_accent,
+        sidebar_accent_foreground,
+        sidebar_border,
+        sidebar_foreground,
+        sidebar_primary,
+        sidebar_primary_foreground,
+        skeleton,
+        slider_bar,
+        slider_thumb,
+        success,
+        success_foreground,
+        success_hover,
+        success_active,
+        switch,
+        switch_thumb,
+        tab,
+        tab_active,
+        tab_active_foreground,
+        tab_bar,
+        tab_bar_segmented,
+        tab_foreground,
+        table,
+        table_active,
+        table_active_border,
+        table_even,
+        table_head,
+        table_head_foreground,
+        table_foot,
+        table_foot_foreground,
+        table_hover,
+        table_row_border,
+        title_bar,
+        title_bar_border,
+        status_bar,
+        status_bar_border,
+        warning,
+        warning_active,
+        warning_hover,
+        warning_foreground,
+        overlay,
+        window_border,
+    );
 
-    serde_json::from_value(value).expect("ThemeConfigColors JSON 反序列化不应失败")
+    // `group_box.title.foreground` 在 ThemeColor 里没有独立字段，复用 foreground。
+    cfg.group_box_title_foreground = Some(SharedString::from(hsla_to_hex_full(colors.foreground)));
+
+    cfg
 }
 
-/// `Hsla` → `#RRGGBB` 十六进制字符串。
+/// `Hsla` → `#RRGGBB` 十六进制字符串（丢弃 alpha；测试/调试用）。
 ///
-/// `try_parse_color` 接受 hex（带 `#`），所以我们把 hsla 转 rgb 再 hex 即可。
-/// alpha 通道在 `try_parse_color` 中被忽略（颜色不带透明度），所以我们也丢弃 alpha。
+/// 需要保留透明度时用 [`hsla_to_hex_full`]。
+#[cfg(test)]
 pub(crate) fn hsla_to_hex(h: Hsla) -> String {
     // HSL → RGB (0..1) → 8-bit → hex
     let (r, g, b) = hsl_to_rgb(h.h, h.s, h.l);
@@ -321,13 +328,150 @@ pub(crate) fn hsla_to_hex(h: Hsla) -> String {
     )
 }
 
+/// **Hex → Hsla**：把 `#RRGGBB` 或 `#RRGGBBAA` 字符串反序列化为 Hsla。
+///
+/// 这与 vendor `gpui-pre-0.3.9/src/color.rs:194-222` 的 `From<Hsla> for Rgba`
+/// 算法对齐但反向：RGB → HSL（按 max/min/delta 分支算 hue）。
+///
+/// **设计层契约**：所有 token 都应通过本函数从设计表的 hex 反推 Hsla——
+/// hex 是真理源（DESIGN.md §2.1 / §2.2 / §2.6），HSL 是派生量。
+pub const fn hex_color(s: &str) -> Hsla {
+    // 跳过可选的 '#' 前缀。
+    let bytes_full = s.as_bytes();
+    let bytes: &[u8] = match bytes_full {
+        [b'#', rest @ ..] => rest,
+        _ => bytes_full,
+    };
+    // 解码 hex 字符（0-15）。内联为 const fn（闭包在 const fn 不允许）。
+    const fn hex_val(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0,
+        }
+    }
+    const fn two(a: u8, b: u8) -> u8 {
+        (hex_val(a) << 4) | hex_val(b)
+    }
+    const fn one(a: u8) -> u8 {
+        (hex_val(a) << 4) | hex_val(a)
+    }
+    // 支持 #rgb / #rgba / #rrggbb / #rrggbbaa
+    let (r, g, b, a) = match bytes {
+        [r0, g0, b0] => (one(*r0), one(*g0), one(*b0), 0xff),
+        [r0, g0, b0, a0] => (one(*r0), one(*g0), one(*b0), one(*a0)),
+        [r0, r1, g0, g1, b0, b1] => (two(*r0, *r1), two(*g0, *g1), two(*b0, *b1), 0xff),
+        [r0, r1, g0, g1, b0, b1, a0, a1] => {
+            (two(*r0, *r1), two(*g0, *g1), two(*b0, *b1), two(*a0, *a1))
+        }
+        _ => unreachable!(),
+    };
+    rgb_to_hsla(r, g, b, a)
+}
+
+/// RGB → HSL（vendor 算法反向；与 `From<Hsla> for Rgba` 对齐）。
+pub const fn rgb_to_hsla(r: u8, g: u8, b: u8, a: u8) -> Hsla {
+    let rf = r as f32 / 255.0;
+    let gf = g as f32 / 255.0;
+    let bf = b as f32 / 255.0;
+
+    let max = if rf > gf && rf > bf {
+        rf
+    } else if gf > bf {
+        gf
+    } else {
+        bf
+    };
+    let min = if rf < gf && rf < bf {
+        rf
+    } else if gf < bf {
+        gf
+    } else {
+        bf
+    };
+    let delta = max - min;
+
+    let l = (max + min) / 2.0;
+
+    let s = if delta == 0.0 {
+        0.0
+    } else if l < 0.5 {
+        delta / (2.0 * l)
+    } else {
+        delta / (2.0 - 2.0 * l)
+    };
+
+    let h = if delta == 0.0 {
+        0.0
+    } else if max == rf {
+        rem_euclid_6((gf - bf) / delta) / 6.0
+    } else if max == gf {
+        rem_euclid_6((bf - rf) / delta + 2.0) / 6.0
+    } else {
+        rem_euclid_6((rf - gf) / delta + 4.0) / 6.0
+    };
+
+    Hsla {
+        h,
+        s,
+        l,
+        a: a as f32 / 255.0,
+    }
+}
+
+/// const 兼容的 `rem_euclid`（f32 在 Rust 1.99 还未稳定为 const）。
+const fn rem_euclid_6(x: f32) -> f32 {
+    let r = x - 6.0 * (x / 6.0).floor();
+    if r < 0.0 { r + 6.0 } else { r }
+}
+
+/// 把 Hsla 编码为 `#RRGGBB`（alpha=1）或 `#RRGGBBAA`（alpha<1）。
+///
+/// 与 `try_parse_color` 一致：hex 接受 3/6 位（短）与 8 位（带 alpha）。
+pub(crate) fn hsla_to_hex_full(h: Hsla) -> String {
+    let (r, g, b) = hsl_to_rgb(h.h, h.s, h.l);
+    let r8 = (r * 255.0).round() as u8;
+    let g8 = (g * 255.0).round() as u8;
+    let b8 = (b * 255.0).round() as u8;
+    let a8 = (h.a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if a8 == 255 {
+        format!("#{:02X}{:02X}{:02X}", r8, g8, b8)
+    } else {
+        format!("#{:02X}{:02X}{:02X}{:02X}", r8, g8, b8, a8)
+    }
+}
+
+/// WCAG 相对亮度（sRGB → linear → Y）。
+///
+/// 算法参考 https://www.w3.org/TR/WCAG21/#dfn-relative-luminance。
+pub(crate) fn relative_luminance(h: Hsla) -> f32 {
+    fn chan(c: f32) -> f32 {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let (r, g, b) = hsl_to_rgb(h.h, h.s, h.l);
+    0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+}
+
+/// WCAG 对比度 = `(L_lighter + 0.05) / (L_darker + 0.05)`。
+pub(crate) fn contrast_ratio(fg: Hsla, bg: Hsla) -> f32 {
+    let l1 = relative_luminance(fg);
+    let l2 = relative_luminance(bg);
+    let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
 /// HSL → sRGB（0..1）。**与 gpui-component `From<Hsla> for Rgba` 完全对齐**
 /// （vendor `gpui-pre-0.3.9/src/color.rs` 的 `c / x / m / match (h*6).floor()` 算法），
 /// 这样我们的 hex round-trip 与 `try_parse_color` 一致——后者也走同样的 vendor 算法。
 ///
 /// **重要**：gpui 的 `Hsla::h` 是 `[0, 1)` 的归一化角度（不是 `[0, 360)`）。
-/// 直接传度数会被 clamp 成 `1.0`，所有色相坍缩成红色。**必须**用 [`crate::ui::palette::hsl_deg`]
-/// 或 [`crate::ui::palette::hsl_deg_a`] 把度数先转成 `[0, 1)` 角度。
+/// 直接传度数会被 clamp 成 `1.0`，所有色相坍缩成红色。**必须**用
+/// [`crate::ui::palette::hsl_deg`] 把度数先转成 `[0, 1)` 角度。
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
@@ -399,38 +543,48 @@ pub fn toggle_mode(window: Option<&mut Window>, cx: &mut App) {
     apply_for_mode(cx);
 }
 
-fn light_palette() -> ThemeColor {
-    // 主色调：暖米纸 + 糖橙
-    let surface = hsl_deg(220.0, 0.18, 0.965);
-    let panel = hsl_deg(40.0, 0.50, 0.990);
-    let sidebar = hsl_deg(38.0, 0.42, 0.915);
+pub(crate) fn light_palette() -> ThemeColor {
+    // 浅色主题（DESIGN.md §2.1）。
+    // **所有 token 以 hex 为契约**——下面 `hex_color("#…")` 反推出 Hsla；
+    // 测试断言 `hex_color(palette_token)` 等于设计表 hex，±2 通道。
+    // 糖橙/成功/警示/危险/糖蓝 的 H/S/L 经 vendor RGB→HSL 反算后呈现
+    // "candy paper" 视觉（已验证与 hex 表一致）。
+    let surface = hex_color("#FBF6EC");
+    let panel = hex_color("#FFFCF5");
+    let sidebar = hex_color("#F5EBD9");
     let topbar = panel;
-    let border = hsl_deg(36.0, 0.40, 0.870);
-    let border_strong = hsl_deg(38.0, 0.40, 0.770);
-    let foreground = hsl_deg(32.0, 0.10, 0.155);
-    let muted_foreground = hsl_deg(32.0, 0.10, 0.420);
-    let muted = hsl_deg(38.0, 0.40, 0.900);
-    let primary = hsl_deg(26.0, 0.90, 0.575);
-    let primary_hover = hsl_deg(26.0, 0.85, 0.520);
-    let primary_active = hsl_deg(26.0, 0.80, 0.450);
-    let primary_foreground = hsl_deg(0.0, 0.0, 1.0);
-    let secondary = hsl_deg(34.0, 0.80, 0.940);
-    let secondary_foreground = hsl_deg(32.0, 0.55, 0.245);
-    let accent = hsl_deg(206.0, 0.74, 0.625);
-    let accent_foreground = hsl_deg(0.0, 0.0, 1.0);
-    let success = hsl_deg(132.0, 0.45, 0.545);
-    let success_foreground = hsl_deg(0.0, 0.0, 1.0);
-    let warning = hsl_deg(40.0, 0.85, 0.590);
-    let warning_foreground = hsl_deg(32.0, 0.55, 0.245);
-    let danger = hsl_deg(0.0, 0.65, 0.630);
-    let danger_foreground = hsl_deg(0.0, 0.0, 1.0);
+    let border = hex_color("#EADFC8");
+    let border_strong = hex_color("#D9C8A3");
+    let foreground = hex_color("#2A2620");
+    let muted_foreground = hex_color("#7A6F60");
+    let muted = hex_color("#F1E8D5");
+    let primary = hex_color("#F08A36");
+    let primary_hover = hex_color("#E27A28");
+    let primary_active = hex_color("#C9661E");
+    // primary_foreground 在浅色模式下用深棕 ink（与 foreground 冲突但更深，
+    // 保证在饱和 primary 橙底上 ≥AA 4.5；测试验证 7.10）。
+    let primary_foreground = hex_color("#1F1612");
+    let secondary = hex_color("#FFF1DD");
+    let secondary_foreground = hex_color("#5A4422");
+    let accent = hex_color("#3478AC"); // 加深保证白字 AA（DESIGN §2.1 注：原 #5AA9E6 仅用于链接/徽标 tint）
+    let accent_foreground = hex_color("#FFFFFF");
+    // success / warning / danger 都在浅色下用深一档的 fill + 白字，保证 AA ≥4.5。
+    let success = hex_color("#3D8246");
+    let success_foreground = hex_color("#FFFFFF");
+    let warning = hex_color("#8F6612");
+    let warning_foreground = hex_color("#FFFFFF");
+    let danger = hex_color("#9C2929");
+    let danger_foreground = hex_color("#FFFFFF");
     let info = accent;
     let info_foreground = accent_foreground;
     let progress_bar = primary;
-    let ring = hsl_deg(32.0, 0.85, 0.685);
-    let selection = hsl_deg(32.0, 0.85, 0.880);
+    let ring = hex_color("#F0B96D");
+    // list_active / selection 是半透明橙（vendor apply_config 会把 list_active 的
+    // alpha 上限压到 0.20、selection 压到 0.30；这里直接取上限内，保证
+    // `apply_for_mode` 与直接 `Theme::change` 得到同一颜色）。
+    let selection = primary.with_alpha(0.24);
     let list_hover = muted;
-    let list_active = selection;
+    let list_active = primary.with_alpha(0.20);
 
     ThemeColor {
         accent,
@@ -473,11 +627,11 @@ fn light_palette() -> ThemeColor {
         group_box: muted,
         group_box_foreground: foreground,
         caret: primary,
-        chart_1: hsl_deg(204.0, 0.45, 0.85),
-        chart_2: accent,
-        chart_3: hsl_deg(208.0, 0.65, 0.53),
-        chart_4: hsl_deg(212.0, 0.65, 0.45),
-        chart_5: hsl_deg(214.0, 0.65, 0.36),
+        chart_1: hex_color("#A9D5F2"),
+        chart_2: hex_color("#5AA9E6"),
+        chart_3: hex_color("#3F8FD0"),
+        chart_4: hex_color("#2E73B5"),
+        chart_5: hex_color("#1F5C97"),
         chart_bullish: success,
         chart_bearish: danger,
         chart_grid: border,
@@ -568,44 +722,46 @@ fn light_palette() -> ThemeColor {
         blue_light: accent.with_alpha(0.20),
         yellow: warning,
         yellow_light: warning.with_alpha(0.20),
-        magenta: hsl_deg(340.0, 0.65, 0.655),
-        magenta_light: hsl_deg(340.0, 0.45, 0.880),
+        magenta: hex_color("#E36B95"),
+        magenta_light: hex_color("#F4B6CC"),
         cyan: accent,
         cyan_light: accent.with_alpha(0.20),
     }
 }
 
-fn dark_palette() -> ThemeColor {
-    let surface = hsl_deg(30.0, 0.10, 0.097);
-    let panel = hsl_deg(30.0, 0.08, 0.135);
-    let sidebar = hsl_deg(28.0, 0.10, 0.108);
+pub(crate) fn dark_palette() -> ThemeColor {
+    // 暗色主题（DESIGN.md §2.2）——所有 token 以 hex 为契约。
+    let surface = hex_color("#1B1815");
+    let panel = hex_color("#26221E");
+    let sidebar = hex_color("#1F1B17");
     let topbar = panel;
-    let border = hsl_deg(32.0, 0.10, 0.198);
-    let border_strong = hsl_deg(34.0, 0.18, 0.310);
-    let foreground = hsl_deg(36.0, 0.50, 0.890);
-    let muted_foreground = hsl_deg(36.0, 0.18, 0.580);
-    let muted = hsl_deg(32.0, 0.14, 0.175);
-    let primary = hsl_deg(24.0, 1.00, 0.680);
-    let primary_hover = hsl_deg(24.0, 1.00, 0.720);
-    let primary_active = hsl_deg(26.0, 0.85, 0.520);
-    let primary_foreground = hsl_deg(30.0, 0.10, 0.097);
-    let secondary = hsl_deg(32.0, 0.18, 0.193);
+    let border = hex_color("#3A342C");
+    let border_strong = hex_color("#5C5240");
+    let foreground = hex_color("#F2E9D6");
+    let muted_foreground = hex_color("#A89A82");
+    let muted = hex_color("#332D25");
+    let primary = hex_color("#FFA55C");
+    let primary_hover = hex_color("#FFB870");
+    let primary_active = hex_color("#E27A28");
+    let primary_foreground = hex_color("#1B1815"); // 深棕字 + 糖橙底 = AA
+    let secondary = hex_color("#3A3328");
     let secondary_foreground = foreground;
-    let accent = hsl_deg(204.0, 0.78, 0.700);
-    let accent_foreground = hsl_deg(210.0, 0.50, 0.120);
-    let success = hsl_deg(134.0, 0.50, 0.640);
-    let success_foreground = hsl_deg(135.0, 0.50, 0.100);
-    let warning = hsl_deg(38.0, 0.95, 0.690);
-    let warning_foreground = hsl_deg(34.0, 0.65, 0.150);
-    let danger = hsl_deg(0.0, 0.70, 0.735);
-    let danger_foreground = hsl_deg(0.0, 0.65, 0.115);
+    let accent = hex_color("#7FBFEE");
+    let accent_foreground = hex_color("#0F1F2E");
+    let success = hex_color("#7CCE89");
+    let success_foreground = hex_color("#0E2410");
+    let warning = hex_color("#FFC664");
+    let warning_foreground = hex_color("#3D2A0F");
+    let danger = hex_color("#F08B8B");
+    let danger_foreground = hex_color("#2E0F0F");
     let info = accent;
     let info_foreground = accent_foreground;
     let progress_bar = primary;
-    let ring = hsl_deg(30.0, 1.00, 0.750);
-    let selection = hsl_deg(30.0, 0.55, 0.225);
+    let ring = hex_color("#FFC080");
+    // 同浅色：alpha 取 vendor 上限内（深棕暖光，不是纯橙）。
+    let selection = hex_color("#5A3D1A").opacity(0.30);
     let list_hover = muted;
-    let list_active = selection;
+    let list_active = hex_color("#5A3D1A").opacity(0.20);
 
     ThemeColor {
         accent,
@@ -648,11 +804,11 @@ fn dark_palette() -> ThemeColor {
         group_box: muted,
         group_box_foreground: foreground,
         caret: primary,
-        chart_1: hsl_deg(204.0, 0.55, 0.420),
-        chart_2: accent,
-        chart_3: hsl_deg(204.0, 0.78, 0.700),
-        chart_4: hsl_deg(204.0, 0.78, 0.780),
-        chart_5: hsl_deg(204.0, 0.78, 0.860),
+        chart_1: hex_color("#3D7CA8"),
+        chart_2: hex_color("#5AA9E6"),
+        chart_3: hex_color("#7FBFEE"),
+        chart_4: hex_color("#A8D2F2"),
+        chart_5: hex_color("#CFE5F8"),
         chart_bullish: success,
         chart_bearish: danger,
         chart_grid: border,
@@ -743,8 +899,8 @@ fn dark_palette() -> ThemeColor {
         blue_light: accent.with_alpha(0.20),
         yellow: warning,
         yellow_light: warning.with_alpha(0.20),
-        magenta: hsl_deg(340.0, 0.75, 0.755),
-        magenta_light: hsl_deg(340.0, 0.55, 0.880),
+        magenta: hex_color("#F08FB0"),
+        magenta_light: hex_color("#F8C8D8"),
         cyan: accent,
         cyan_light: accent.with_alpha(0.20),
     }
@@ -784,67 +940,9 @@ mod tests {
         let _ = dark_palette();
     }
 
-    /// 设计层合约 debug 工具：打印每个 token 的 hex（视觉 review 用）。
-    /// 正式断言在 `key_token_hex_matches_design_table` 里。
-    #[test]
-    #[ignore]
-    fn dump_palette_hex() {
-        let lp = light_palette();
-        eprintln!("=== LIGHT ===");
-        for (k, v) in [
-            ("background", lp.background),
-            ("primary", lp.primary),
-            ("sidebar", lp.sidebar),
-            ("popover", lp.popover),
-            ("border", lp.border),
-            ("foreground", lp.foreground),
-            ("muted_foreground", lp.muted_foreground),
-            ("muted", lp.muted),
-            ("accent", lp.accent),
-            ("success", lp.success),
-            ("warning", lp.warning),
-            ("danger", lp.danger),
-            ("selection", lp.selection),
-            ("input", lp.input),
-            ("ring", lp.ring),
-            ("secondary", lp.secondary),
-            ("secondary_foreground", lp.secondary_foreground),
-            ("primary_foreground", lp.primary_foreground),
-            ("accent_foreground", lp.accent_foreground),
-        ] {
-            eprintln!("{k:20} = {} ({:?})", hsla_to_hex(v), (v.h * 360.0).round());
-        }
-        let dp = dark_palette();
-        eprintln!("=== DARK ===");
-        for (k, v) in [
-            ("background", dp.background),
-            ("primary", dp.primary),
-            ("sidebar", dp.sidebar),
-            ("popover", dp.popover),
-            ("border", dp.border),
-            ("foreground", dp.foreground),
-            ("muted_foreground", dp.muted_foreground),
-            ("muted", dp.muted),
-            ("accent", dp.accent),
-            ("success", dp.success),
-            ("warning", dp.warning),
-            ("danger", dp.danger),
-            ("selection", dp.selection),
-            ("input", dp.input),
-            ("ring", dp.ring),
-            ("secondary", dp.secondary),
-            ("secondary_foreground", dp.secondary_foreground),
-            ("primary_foreground", dp.primary_foreground),
-            ("accent_foreground", dp.accent_foreground),
-        ] {
-            eprintln!("{k:20} = {} ({:?})", hsla_to_hex(v), (v.h * 360.0).round());
-        }
-    }
-
     /// DESIGN.md §2.1：关键 token 的 hex 与表一致。
     ///
-    /// 容忍度：±1/通道——`Hsla → Rgba` 与 `Rgba → Hsla` 的 round-trip 会损失
-    /// 少量浮点精度；Design 层契约以 hex 表为准。
+    /// 容忍度：≤2/通道——hex 是设计表契约；HSL 反算引入 ≤1 通道浮点漂移。
     #[test]
     fn key_token_hex_matches_design_table() {
         let lp = light_palette();
@@ -859,12 +957,22 @@ mod tests {
             &hsla_to_hex(lp.muted_foreground),
             "#7A6F60",
         );
-        assert_eq_hex("accent", &hsla_to_hex(lp.accent), "#5AA9E6");
-        assert_eq_hex("success", &hsla_to_hex(lp.success), "#5DBB6A");
-        assert_eq_hex("warning", &hsla_to_hex(lp.warning), "#F0B73D");
-        assert_eq_hex("danger", &hsla_to_hex(lp.danger), "#E36B6B");
+        // 加深的 fill（保证白字 AA ≥4.5）
+        assert_eq_hex("accent (darkened)", &hsla_to_hex(lp.accent), "#3478AC");
+        assert_eq_hex("success (darkened)", &hsla_to_hex(lp.success), "#3D8246");
+        assert_eq_hex("warning (darkened)", &hsla_to_hex(lp.warning), "#8F6612");
+        assert_eq_hex("danger (darkened)", &hsla_to_hex(lp.danger), "#9C2929");
         assert_eq_hex("muted", &hsla_to_hex(lp.muted), "#F1E8D5");
-        assert_eq_hex("selection", &hsla_to_hex(lp.selection), "#FCE5C0");
+        assert_eq!(
+            hsla_to_hex_full(lp.selection),
+            "#F08A363D",
+            "light selection (alpha)"
+        );
+        assert_eq!(
+            hsla_to_hex_full(lp.list_active),
+            "#F08A3633",
+            "light list_active (alpha)"
+        );
         assert_eq_hex("border_strong", &hsla_to_hex(lp.input), "#D9C8A3");
 
         let dp = dark_palette();
@@ -883,14 +991,23 @@ mod tests {
         assert_eq_hex("dark success", &hsla_to_hex(dp.success), "#7CCE89");
         assert_eq_hex("dark warning", &hsla_to_hex(dp.warning), "#FFC664");
         assert_eq_hex("dark danger", &hsla_to_hex(dp.danger), "#F08B8B");
+        assert_eq!(
+            hsla_to_hex_full(dp.selection),
+            "#5A3D1A4D",
+            "dark selection (alpha)"
+        );
+        assert_eq!(
+            hsla_to_hex_full(dp.list_active),
+            "#5A3D1A33",
+            "dark list_active (alpha)"
+        );
     }
 
     fn assert_eq_hex(label: &str, got: &str, expected: &str) {
         let got_rgb = parse_hex(got);
         let exp_rgb = parse_hex(expected);
-        // 容忍度 ±12 / 通道——vendor 的 HSL→RGB 在低饱和（s<0.3）+ 高亮（l>0.9）
-        // 时有色相分支漂移，hex 不能严格匹配。详见 DESIGN.md §9 changelog。
-        const TOL: u8 = 12;
+        // 容忍度 ≤2 / 通道——hex 是契约；HSL 反算引入 ≤1 通道浮点漂移。
+        const TOL: u8 = 2;
         assert!(
             (got_rgb.0.abs_diff(exp_rgb.0) <= TOL)
                 && (got_rgb.1.abs_diff(exp_rgb.1) <= TOL)
@@ -919,6 +1036,7 @@ mod tests {
     fn hsla_to_hex_known_colors() {
         // gpui::Hsla.h 是 [0, 1) 归一化角度。我们用 `hsl_deg` 走度数路径，
         // 验证 hsl_deg → hsl_to_rgb → hex 链路对常见色正确。
+        use crate::ui::palette::hsl_deg;
 
         // h = 0° = red #FF0000
         assert_eq!(hsla_to_hex(hsl_deg(0.0, 1.0, 0.5)), "#FF0000");
@@ -933,6 +1051,149 @@ mod tests {
         assert_eq!(hsla_to_hex(hsl_deg(0.0, 0.0, 1.0)), "#FFFFFF");
         assert_eq!(hsla_to_hex(hsl_deg(0.0, 0.0, 0.0)), "#000000");
         assert_eq!(hsla_to_hex(hsl_deg(0.0, 0.0, 0.5)), "#808080");
+    }
+
+    /// `hex_color` 往返：常用 hex 与还原的 Hsla→hex 一致。
+    #[test]
+    fn hex_color_roundtrip() {
+        let cases = [
+            "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FFFFFF", "#000000",
+            "#5AA9E6", // accent light
+            "#FBF6EC", // surface light
+            "#1B1815", // background dark
+            "#FFA55C", // primary dark
+        ];
+        for hex in cases {
+            let h = hex_color(hex);
+            assert_eq!(
+                hsla_to_hex(h),
+                hex,
+                "roundtrip failed for {hex}: got hsla = {:?}, hex = {}",
+                h,
+                hsla_to_hex(h),
+            );
+        }
+    }
+
+    /// `hex_color` 支持 8 位带 alpha。
+    #[test]
+    fn hex_color_with_alpha() {
+        let h = hex_color("#F08A3680");
+        // alpha 0x80 = 128 ≈ 0.502
+        assert!((h.a - 0.502).abs() < 0.01, "alpha = {}", h.a);
+        assert_eq!(hsla_to_hex_full(h), "#F08A3680");
+    }
+
+    /// WCAG AA 对比度断言：所有填色上的前景文字均 ≥4.5。
+    /// 来源：DESIGN.md §5.1 + §2.1/§2.2 token 表。
+    #[test]
+    fn wcag_aa_contrast_on_filled_buttons() {
+        fn check(label: &str, fg_hex: &str, bg_hex: &str, min: f32) {
+            let cr = contrast_ratio(hex_color(fg_hex), hex_color(bg_hex));
+            assert!(
+                cr >= min,
+                "{label}: fg={fg_hex} on bg={bg_hex} → cr={cr:.2} (期望 ≥{min})"
+            );
+        }
+        // 浅色模式：白字仅用在已加深的 fill 上；primary_fg ink 用在饱和主橙上
+        check("light primary_ink on primary", "#1F1612", "#F08A36", 4.5);
+        check("light accent_white on accent", "#FFFFFF", "#3478AC", 4.5);
+        check("light success_white on success", "#FFFFFF", "#3D8246", 4.5);
+        check("light warning_white on warning", "#FFFFFF", "#8F6612", 4.5);
+        check("light danger_white on danger", "#FFFFFF", "#9C2929", 4.5);
+        check("light foreground on surface", "#2A2620", "#FBF6EC", 7.0);
+        check(
+            "light muted_foreground on surface",
+            "#7A6F60",
+            "#FBF6EC",
+            4.5,
+        );
+        check("light secondary_fg on secondary", "#5A4422", "#FFF1DD", 4.5);
+        // 暗色模式：深棕字 + 浅橙底 = AAA；其余沿用旧策略（暗 fg + 浅色 fill）
+        check("dark primary_fg on primary", "#1B1815", "#FFA55C", 4.5);
+        check("dark foreground on background", "#F2E9D6", "#1B1815", 7.0);
+        check(
+            "dark muted_foreground on background",
+            "#A89A82",
+            "#1B1815",
+            4.5,
+        );
+        check("dark success_fg on success", "#0E2410", "#7CCE89", 4.5);
+        check("dark danger_fg on danger", "#2E0F0F", "#F08B8B", 4.5);
+        check("dark warning_fg on warning", "#3D2A0F", "#FFC664", 4.5);
+        check("dark accent_fg on accent", "#0F1F2E", "#7FBFEE", 4.5);
+    }
+
+    /// `theme_config_colors_from` 的键集合必须与 vendor `ThemeConfigColors` 完全一致。
+    ///
+    /// 这能抓住三类缺陷：① 键名拼错（如 `progress_bar.background` vs
+    /// `progress.bar.background`）；② 漏字段（如 `chart.1..5`）；③ 公共字段没赋值
+    /// （序列化为 null，`apply_config` 会回退到 gpui 默认色）。
+    #[test]
+    fn theme_config_keys_match_vendor_schema() {
+        let default = serde_json::to_value(ThemeConfigColors::default()).unwrap();
+        let expected: std::collections::BTreeSet<String> = default
+            .as_object()
+            .expect("ThemeConfigColors 应序列化为 object")
+            .keys()
+            .cloned()
+            .collect();
+
+        for (mode_name, palette) in [("light", light_palette()), ("dark", dark_palette())] {
+            let cfg = theme_config_colors_from(&palette);
+            let value = serde_json::to_value(&cfg).unwrap();
+            let object = value.as_object().expect("应序列化为 object");
+            let actual: std::collections::BTreeSet<String> = object.keys().cloned().collect();
+
+            assert_eq!(
+                actual, expected,
+                "{mode_name}: ThemeConfigColors 键集合与 vendor 不一致"
+            );
+
+            for (key, value) in object {
+                if key.starts_with("base.") {
+                    // 12 个私有基础色保持 None：它们只是缺失公共字段的 fallback。
+                    assert!(value.is_null(), "{mode_name}: {key} 不应被设置");
+                } else {
+                    assert!(
+                        !value.is_null(),
+                        "{mode_name}: {key} 未赋值，直接 Theme::change 会回退到 gpui 默认色"
+                    );
+                }
+            }
+
+            // 关键 alpha 键必须是 #RRGGBBAA，否则对话框遮罩/滚动条会变不透明。
+            let expect_alpha = |key: &str, alpha: u8| {
+                let s = object[key]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{mode_name}: {key} 不是字符串"));
+                assert_eq!(
+                    s.len(),
+                    9,
+                    "{mode_name}: {key} 应带 alpha（#RRGGBBAA），got {s}"
+                );
+                let got = u8::from_str_radix(&s[7..9], 16).unwrap();
+                assert!(
+                    got.abs_diff(alpha) <= 1,
+                    "{mode_name}: {key} alpha = {got:#04X}，期望 {alpha:#04X}（{s}）"
+                );
+            };
+            let (overlay_alpha, border_alpha) = if mode_name == "light" {
+                (0x52, 0x80)
+            } else {
+                (0x8C, 0x99)
+            };
+            expect_alpha("overlay", overlay_alpha);
+            expect_alpha("scrollbar.thumb.background", 0x80);
+            expect_alpha("drop_target.background", 0x33);
+            expect_alpha("list.active.border", border_alpha);
+            expect_alpha("table.active.border", border_alpha);
+            expect_alpha("list.active.background", 0x33);
+            expect_alpha(
+                "selection.background",
+                if mode_name == "light" { 0x3D } else { 0x4D },
+            );
+        }
     }
 
     /// `theme_config_colors_from` 应能正确序列化所有公共字段；
@@ -959,6 +1220,341 @@ mod tests {
 
     fn fresh_cx() -> TestAppContext {
         TestAppContext::single()
+    }
+
+    /// 颜色近似比较：RGB ≤2/通道，alpha ≤1/255。
+    fn assert_color_close(label: &str, before: Hsla, after: Hsla) {
+        let b = hsla_to_hex_full(before);
+        let a = hsla_to_hex_full(after);
+        let (br, bg, bb) = parse_hex(&b);
+        let (ar, ag, ab) = parse_hex(&a);
+        assert!(
+            br.abs_diff(ar) <= 2 && bg.abs_diff(ag) <= 2 && bb.abs_diff(ab) <= 2,
+            "{label}: {b} → {a}（RGB 偏差 >2）"
+        );
+        assert!(
+            (before.a - after.a).abs() <= 1.5 / 255.0,
+            "{label}: alpha {} → {}（偏差 >1/255）",
+            before.a,
+            after.a
+        );
+    }
+
+    macro_rules! assert_color_fields {
+        ($before:expr, $after:expr, $($field:ident),+ $(,)?) => {
+            $(
+                assert_color_close(concat!("colors.", stringify!($field)), $before.$field, $after.$field);
+            )+
+        };
+    }
+
+    macro_rules! assert_token_fields {
+        ($before:expr, $after:expr, $($field:ident),+ $(,)?) => {
+            $(
+                assert_color_close(concat!("tokens.", stringify!($field)), $before.$field.color, $after.$field.color);
+            )+
+        };
+    }
+
+    /// 直接调用 `Theme::change`（不经过 `apply_for_mode`）后，所有 CoursePlan 语义色
+    /// 必须与刚安装时一致——包括 `overlay.a`、`progress_bar`、`chart_*`、`tokens.*`。
+    ///
+    /// 12 个 vendor 基础色（`red..cyan_light`）不可通过 `ThemeConfigColors` 设置，
+    /// 只作为缺失公共字段的 fallback，因此不参与比较。
+    #[test]
+    fn direct_theme_change_preserves_all_semantic_fields() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let cx = fresh_cx();
+            cx.update(|cx| {
+                crate::gpui::component::theme::init(cx);
+                force_init_for_test(cx);
+                crate::gpui::component::Theme::change(mode, None, cx);
+
+                let theme = Theme::global(cx);
+                let expected = if mode.is_dark() {
+                    dark_palette()
+                } else {
+                    light_palette()
+                };
+
+                assert_color_fields!(
+                    expected,
+                    theme.colors,
+                    accent,
+                    accent_foreground,
+                    accordion,
+                    background,
+                    border,
+                    button,
+                    button_active,
+                    button_foreground,
+                    button_hover,
+                    button_danger,
+                    button_danger_active,
+                    button_danger_foreground,
+                    button_danger_hover,
+                    button_info,
+                    button_info_active,
+                    button_info_foreground,
+                    button_info_hover,
+                    button_primary,
+                    button_primary_active,
+                    button_primary_foreground,
+                    button_primary_hover,
+                    button_secondary,
+                    button_secondary_active,
+                    button_secondary_foreground,
+                    button_secondary_hover,
+                    button_success,
+                    button_success_active,
+                    button_success_foreground,
+                    button_success_hover,
+                    button_warning,
+                    button_warning_active,
+                    button_warning_foreground,
+                    button_warning_hover,
+                    group_box,
+                    group_box_foreground,
+                    caret,
+                    chart_1,
+                    chart_2,
+                    chart_3,
+                    chart_4,
+                    chart_5,
+                    chart_bullish,
+                    chart_bearish,
+                    chart_grid,
+                    danger,
+                    danger_active,
+                    danger_foreground,
+                    danger_hover,
+                    description_list_label,
+                    description_list_label_foreground,
+                    drag_border,
+                    drop_target,
+                    foreground,
+                    info,
+                    info_active,
+                    info_foreground,
+                    info_hover,
+                    input,
+                    link,
+                    link_active,
+                    link_hover,
+                    list,
+                    list_active,
+                    list_active_border,
+                    list_even,
+                    list_head,
+                    list_hover,
+                    muted,
+                    muted_foreground,
+                    popover,
+                    popover_foreground,
+                    primary,
+                    primary_active,
+                    primary_foreground,
+                    primary_hover,
+                    progress_bar,
+                    ring,
+                    scrollbar,
+                    scrollbar_thumb,
+                    scrollbar_thumb_hover,
+                    secondary,
+                    secondary_active,
+                    secondary_foreground,
+                    secondary_hover,
+                    selection,
+                    sidebar,
+                    sidebar_accent,
+                    sidebar_accent_foreground,
+                    sidebar_border,
+                    sidebar_foreground,
+                    sidebar_primary,
+                    sidebar_primary_foreground,
+                    skeleton,
+                    slider_bar,
+                    slider_thumb,
+                    success,
+                    success_foreground,
+                    success_hover,
+                    success_active,
+                    switch,
+                    switch_thumb,
+                    tab,
+                    tab_active,
+                    tab_active_foreground,
+                    tab_bar,
+                    tab_bar_segmented,
+                    tab_foreground,
+                    table,
+                    table_active,
+                    table_active_border,
+                    table_even,
+                    table_head,
+                    table_head_foreground,
+                    table_foot,
+                    table_foot_foreground,
+                    table_hover,
+                    table_row_border,
+                    title_bar,
+                    title_bar_border,
+                    status_bar,
+                    status_bar_border,
+                    warning,
+                    warning_active,
+                    warning_hover,
+                    warning_foreground,
+                    overlay,
+                    window_border,
+                );
+
+                // 重点回归：overlay alpha 不能丢（对话框遮罩）。
+                let expected_alpha = if mode.is_dark() { 0.55 } else { 0.32 };
+                assert!(
+                    (theme.overlay.a - expected_alpha).abs() < 0.01,
+                    "overlay.a = {}（期望 {expected_alpha}）",
+                    theme.overlay.a
+                );
+                assert_color_close("progress_bar", expected.progress_bar, theme.progress_bar);
+                assert_color_close("chart_2", expected.chart_2, theme.chart_2);
+                assert_color_close("chart_5", expected.chart_5, theme.chart_5);
+
+                // tokens.* 是组件实际读取的解析结果；全部对比 color。
+                let expected_tokens = crate::gpui::component::ThemeTokens::from(expected);
+                assert_token_fields!(
+                    expected_tokens,
+                    theme.tokens,
+                    accent,
+                    accent_foreground,
+                    accordion,
+                    background,
+                    border,
+                    button,
+                    button_active,
+                    button_foreground,
+                    button_hover,
+                    button_danger,
+                    button_danger_active,
+                    button_danger_foreground,
+                    button_danger_hover,
+                    button_info,
+                    button_info_active,
+                    button_info_foreground,
+                    button_info_hover,
+                    button_primary,
+                    button_primary_active,
+                    button_primary_foreground,
+                    button_primary_hover,
+                    button_secondary,
+                    button_secondary_active,
+                    button_secondary_foreground,
+                    button_secondary_hover,
+                    button_success,
+                    button_success_active,
+                    button_success_foreground,
+                    button_success_hover,
+                    button_warning,
+                    button_warning_active,
+                    button_warning_foreground,
+                    button_warning_hover,
+                    group_box,
+                    group_box_foreground,
+                    caret,
+                    chart_1,
+                    chart_2,
+                    chart_3,
+                    chart_4,
+                    chart_5,
+                    chart_bullish,
+                    chart_bearish,
+                    chart_grid,
+                    danger,
+                    danger_active,
+                    danger_foreground,
+                    danger_hover,
+                    description_list_label,
+                    description_list_label_foreground,
+                    drag_border,
+                    drop_target,
+                    foreground,
+                    info,
+                    info_active,
+                    info_foreground,
+                    info_hover,
+                    input,
+                    link,
+                    link_active,
+                    link_hover,
+                    list,
+                    list_active,
+                    list_active_border,
+                    list_even,
+                    list_head,
+                    list_hover,
+                    muted,
+                    muted_foreground,
+                    popover,
+                    popover_foreground,
+                    primary,
+                    primary_active,
+                    primary_foreground,
+                    primary_hover,
+                    progress_bar,
+                    ring,
+                    scrollbar,
+                    scrollbar_thumb,
+                    scrollbar_thumb_hover,
+                    secondary,
+                    secondary_active,
+                    secondary_foreground,
+                    secondary_hover,
+                    selection,
+                    sidebar,
+                    sidebar_accent,
+                    sidebar_accent_foreground,
+                    sidebar_border,
+                    sidebar_foreground,
+                    sidebar_primary,
+                    sidebar_primary_foreground,
+                    skeleton,
+                    slider_bar,
+                    slider_thumb,
+                    success,
+                    success_foreground,
+                    success_hover,
+                    success_active,
+                    switch,
+                    switch_thumb,
+                    tab,
+                    tab_active,
+                    tab_active_foreground,
+                    tab_bar,
+                    tab_bar_segmented,
+                    tab_foreground,
+                    table,
+                    table_active,
+                    table_active_border,
+                    table_even,
+                    table_head,
+                    table_head_foreground,
+                    table_foot,
+                    table_foot_foreground,
+                    table_hover,
+                    table_row_border,
+                    title_bar,
+                    title_bar_border,
+                    status_bar,
+                    status_bar_border,
+                    warning,
+                    warning_active,
+                    warning_hover,
+                    warning_foreground,
+                    overlay,
+                    window_border,
+                );
+            });
+        }
     }
 
     #[test]

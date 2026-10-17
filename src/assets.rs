@@ -21,6 +21,7 @@ icon_assets!(
         GraduationCap,
         ListTodo,
         NotebookPen,
+        Sparkle,
         Target,
         Trash,
     ]
@@ -46,6 +47,7 @@ pub const APP_ICONS: &[IconName] = &[
     IconName::NotebookPen,
     IconName::Plus,
     IconName::Settings,
+    IconName::Sparkle,
     IconName::Sun,
     IconName::Target,
     IconName::Trash,

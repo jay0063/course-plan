@@ -13,9 +13,10 @@ use std::rc::Rc;
 use crate::app::App;
 use crate::model::{Database, Session, WEEKDAY_LABELS, WEEKDAY_SHORT};
 use crate::ui::form::field_row;
+use crate::ui::palette::palette_at_for;
 use crate::ui::select::{Select, SelectOption};
 use crate::ui::widgets::{
-    action_button, card, close_editor, eid, empty_state, palette_at, panel, section_title, tint,
+    action_button, card, close_editor, eid, empty_state, panel, section_title, tint,
 };
 
 #[derive(Clone)]
@@ -293,15 +294,20 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
 
     // MARK: 周课表网格
 
-    let mut grid = div().flex().flex_col().gap_1();
+    let mut grid = div().flex().flex_col().gap_1().min_w(px(672.));
 
     // 表头
-    let mut header = div().flex().gap_1().child(div().w(px(56.)).flex_shrink_0());
+    let mut header = div()
+        .w_full()
+        .flex()
+        .gap_1()
+        .child(div().w(px(56.)).flex_shrink_0());
     for d in 1..=7u8 {
         let is_today = d == today_weekday;
         header = header.child(
             div()
-                .flex_1()
+                .w(px(88.))
+                .flex_shrink_0()
                 .flex()
                 .flex_col()
                 .items_center()
@@ -361,12 +367,13 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
     }
 
     // 每天一列
-    let mut body = div().flex().gap_1();
+    let mut body = div().w_full().flex().gap_1();
     for d in 1..=7u8 {
         let sessions: Vec<Session> = app.db.sessions_on(d).into_iter().cloned().collect();
         let is_today = d == today_weekday;
         let mut column = div()
-            .flex_1()
+            .w(px(88.))
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap_1()
@@ -400,7 +407,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
 
         for s in &sessions {
             let course = app.db.course(&s.course_id);
-            let color = course.map(|c| palette_at(c.color)).unwrap_or(theme.primary);
+            let color = course
+                .map(|c| palette_at_for(c.color, &theme))
+                .unwrap_or(theme.primary);
             let name = course
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "未知".into());
@@ -509,7 +518,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
     sorted.sort_by_key(|s| (s.weekday, s.start_minutes()));
     for s in sorted.iter().take(12) {
         let course = app.db.course(&s.course_id);
-        let color = course.map(|c| palette_at(c.color)).unwrap_or(theme.primary);
+        let color = course
+            .map(|c| palette_at_for(c.color, &theme))
+            .unwrap_or(theme.primary);
         let name = course
             .map(|c| c.name.clone())
             .unwrap_or_else(|| "未知".into());
@@ -627,7 +638,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
                 .gap_4()
                 .flex_1()
                 .min_h_0()
-                .child(div().flex_1().min_w_0().overflow_y_scrollbar().child(grid))
+                .child(div().flex_1().min_w_0().overflow_scrollbar().child(grid))
                 .child(
                     div()
                         .w(px(260.))

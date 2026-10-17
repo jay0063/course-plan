@@ -7,6 +7,7 @@ use crate::gpui::component::Size;
 use crate::gpui::component::Theme;
 use crate::gpui::*;
 use crate::prelude::*;
+use crate::ui::tokens::text as text_tokens;
 use crate::ui::tokens::{SPACE_LG, SPACE_XL};
 
 #[derive(Clone, Copy)]
@@ -15,7 +16,7 @@ pub enum EmptyVariant {
     Illustrated,
     /// 列表内空态：padding-y 24，icon 32px。
     Compact,
-    /// 全部完成：图标更大、配色 warning，强调"做得好"。
+    /// 全部完成：Sparkle 56px + 右上角小星，强调"做得好"。
     Celebratory,
 }
 
@@ -30,14 +31,19 @@ pub fn empty_state(
     let title = title.into();
     let description: Option<SharedString> = description.map(Into::into);
 
+    // Celebratory 固定用 Sparkle（§3.11）；其余使用调用方图标。
+    let icon = if matches!(variant, EmptyVariant::Celebratory) {
+        IconName::Sparkle
+    } else {
+        icon
+    };
     let icon_size = match variant {
-        EmptyVariant::Illustrated => Size::Large,
-        EmptyVariant::Compact => Size::Medium,
-        EmptyVariant::Celebratory => Size::Large,
+        EmptyVariant::Illustrated | EmptyVariant::Celebratory => Size::Size(px(56.)),
+        EmptyVariant::Compact => Size::Size(px(32.)),
     };
     let title_size = match variant {
-        EmptyVariant::Illustrated => px(20.),
-        EmptyVariant::Compact => px(15.),
+        EmptyVariant::Illustrated => text_tokens::TITLE,
+        EmptyVariant::Compact => text_tokens::BODY_EMPH,
         EmptyVariant::Celebratory => px(22.),
     };
     let title_weight = if matches!(variant, EmptyVariant::Celebratory) {
@@ -71,24 +77,33 @@ pub fn empty_state(
         col = col.min_h(px(240.)).w(px(320.)).mx_auto().rounded(px(20.));
     }
 
-    col = col
-        .child(
+    let mut icon_block = div()
+        .relative()
+        .text_color(icon_color)
+        .child(Icon::new(icon).with_size(icon_size));
+    if matches!(variant, EmptyVariant::Celebratory) {
+        icon_block = icon_block.child(
             div()
-                .text_color(icon_color)
-                .child(Icon::new(icon).with_size(icon_size)),
-        )
-        .child(
-            div()
-                .text_size(title_size)
-                .font_weight(title_weight)
-                .text_color(theme.foreground)
-                .child(title),
+                .absolute()
+                .top(px(-12.))
+                .right(px(-16.))
+                .text_color(theme.warning)
+                .child(Icon::new(IconName::Sparkle).with_size(Size::Size(px(20.)))),
         );
+    }
+
+    col = col.child(icon_block).child(
+        div()
+            .text_size(title_size)
+            .font_weight(title_weight)
+            .text_color(theme.foreground)
+            .child(title),
+    );
 
     if let Some(desc) = description {
         col = col.child(
             div()
-                .text_sm()
+                .text_size(text_tokens::BODY_SM)
                 .text_color(theme.muted_foreground)
                 .text_center()
                 .child(desc),

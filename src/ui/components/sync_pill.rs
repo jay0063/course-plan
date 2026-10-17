@@ -1,5 +1,6 @@
 //! 同步状态 pill（详见 `docs/DESIGN.md` §3.4）。
 
+use crate::gpui::TestSupportExt as _;
 use crate::gpui::component::Theme;
 use crate::gpui::*;
 use crate::prelude::*;
@@ -7,8 +8,11 @@ use crate::sync::Status;
 use crate::ui::tokens::{RADIUS_FULL, SYNC_PILL_H};
 
 /// 顶栏用同步状态 pill（24px 高，胶囊）。
+///
+/// `id` 是稳定 test-support id（§6.8：`ui:topbar:sync-pill`）。
 pub fn sync_pill(
     theme: &Theme,
+    id: impl Into<ElementId>,
     status: &Status,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -54,7 +58,7 @@ pub fn sync_pill(
     };
 
     div()
-        .id(ElementId::Name("sync-pill".into()))
+        .id(id)
         .flex()
         .items_center()
         .gap(px(6.))
@@ -79,10 +83,18 @@ pub fn sync_pill(
                 .text_color(theme.foreground)
                 .child(label),
         )
+        .test_support()
 }
 
-/// 侧栏 footer 用紧凑指示（圆点 + 5-6 字）。
-pub fn sync_indicator_compact(theme: &Theme, status: &Status) -> impl IntoElement {
+/// 侧栏 footer 用紧凑指示（圆点 + 5-6 字），可点击跳转设置页。
+///
+/// `id` 是稳定 test-support id（§6.8：`ui:sidebar:sync-indicator`）。
+pub fn sync_indicator_compact(
+    theme: &Theme,
+    id: impl Into<ElementId>,
+    status: &Status,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let (label, dot_color) = match status {
         Status::Idle { .. } => ("已同步", theme.success),
         Status::Syncing => ("同步中…", theme.info),
@@ -91,9 +103,16 @@ pub fn sync_indicator_compact(theme: &Theme, status: &Status) -> impl IntoElemen
         Status::Error { .. } | Status::AuthFailed => ("同步出错", theme.danger),
     };
     div()
+        .id(id)
         .flex()
         .items_center()
         .gap(px(6.))
+        .px(px(6.))
+        .py(px(4.))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.list_hover))
+        .on_click(on_click)
         .child(
             div()
                 .size(px(6.))
@@ -107,4 +126,5 @@ pub fn sync_indicator_compact(theme: &Theme, status: &Status) -> impl IntoElemen
                 .text_color(theme.muted_foreground)
                 .child(label),
         )
+        .test_support()
 }

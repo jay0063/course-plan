@@ -20,6 +20,7 @@ mod support;
 
 use course_plan::app::Page;
 use course_plan::gpui::component::ThemeMode;
+use course_plan::gpui::test::TestWindowExt;
 
 /// 8 个页面及其文件名 slug。
 const PAGES: [(Page, &str); 8] = [
@@ -76,6 +77,39 @@ fn render_all_pages_light_and_dark() {
         expect_w,
         expect_h
     );
+}
+
+/// Shell 稳定 test id（§6.8）：必须在渲染树里可被找到。
+///
+/// 这是 Phase 4 三泳道 QA 的锚点——id 一旦漂移，此测试失败。
+#[test]
+fn shell_element_ids_are_stable() {
+    if !support::enabled() {
+        support::skip("shell_element_ids_are_stable");
+        return;
+    }
+
+    let mut harness = support::Harness::new();
+    harness.draw();
+    let window = harness.window;
+    let mut missing = Vec::new();
+    for id in [
+        "ui:brand:",
+        "ui:topbar:theme-toggle",
+        "ui:topbar:quick-add",
+        "ui:topbar:sync-pill",
+        "ui:sidebar:sync-indicator",
+        "nav:今日概览",
+    ] {
+        let found = harness
+            .cx
+            .update_window(window, |_, window, _| window.try_find(id).is_some())
+            .expect("读取渲染树失败");
+        if !found {
+            missing.push(id);
+        }
+    }
+    assert!(missing.is_empty(), "缺少稳定 test id：{missing:?}");
 }
 
 /// 交互冒烟：导航到「课程管理」，经公开 API 打开课程编辑器、输入文本、关闭，

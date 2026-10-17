@@ -1,14 +1,13 @@
 //! 卡片族（详见 `docs/DESIGN.md` §3.7）。
 //!
 //! 5 变体 —— Default / Flat / Outlined / Accent(color) / Hero。
-//!
-//! 推荐使用 [`card_with_theme`]：传入 `&Theme` 拿到正确的颜色；
-//! [`card`] 是简化版本，仅适合不需要主题着色的纯几何容器。
+//! 统一入口 [`card_with_theme`]：传入 `&Theme` 拿到正确颜色。
 
 use crate::gpui::component::Theme;
 use crate::gpui::*;
 use crate::prelude::*;
 use crate::ui::components::panel as panel_helper;
+use crate::ui::tokens::text as text_tokens;
 use crate::ui::tokens::{RADIUS_LG, RADIUS_XL};
 
 #[derive(Clone, Copy)]
@@ -57,7 +56,7 @@ pub fn card_with_theme(
             card_div = card_div
                 .bg(panel_helper::panel(theme))
                 .rounded(RADIUS_XL)
-                .shadow_sm();
+                .shadow_md();
         }
     }
 
@@ -65,7 +64,12 @@ pub fn card_with_theme(
         variant,
         CardVariant::Default | CardVariant::Hero | CardVariant::Outlined
     ) {
-        card_div = card_div.border_1().border_color(theme.border);
+        let bordered = if matches!(variant, CardVariant::Outlined) {
+            card_div.border_2()
+        } else {
+            card_div.border_1()
+        };
+        card_div = bordered.border_color(theme.border);
     }
 
     card_div = card_div.p(px(16.));
@@ -79,33 +83,20 @@ pub fn card_with_theme(
                 .gap(px(2.))
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(text_tokens::SUBTITLE)
                         .font_weight(FontWeight(600.0))
                         .text_color(theme.foreground)
                         .child(t),
                 )
                 .when_some(subtitle, |d, s| {
-                    d.child(div().text_xs().text_color(theme.muted_foreground).child(s))
+                    d.child(
+                        div()
+                            .text_size(text_tokens::BODY_SM)
+                            .text_color(theme.muted_foreground)
+                            .child(s),
+                    )
                 }),
         );
     }
     final_div.child(content)
-}
-
-/// 无主题版本：仅做几何（圆角/padding）。仅用于纯几何容器场景；
-/// Phase 4 视图统一使用 [`card_with_theme`]。
-pub fn card(
-    _variant: CardVariant,
-    _title: Option<impl Into<SharedString>>,
-    _subtitle: Option<impl Into<SharedString>>,
-    content: impl IntoElement,
-) -> impl IntoElement {
-    // 简化为：bg 透明、border 默认；视图层应改用 card_with_theme
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .p(px(16.))
-        .rounded(RADIUS_LG)
-        .child(content)
 }
