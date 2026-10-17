@@ -1,11 +1,11 @@
 use crate::prelude::*;
 use gpui::assets::IconName;
 use gpui::component::Size;
+use gpui::component::WindowExt;
 use gpui::component::button::{Button, ButtonVariants};
 use gpui::component::input::InputState;
 use gpui::component::notification::Notification;
 use gpui::component::scroll::ScrollableElement;
-use gpui::component::{ThemeMode, WindowExt};
 use gpui::*;
 
 use crate::model::{self, Database, Repeat};
@@ -13,6 +13,10 @@ use crate::store;
 use crate::sync::{
     FirstLoginPolicy, ProbeSummary, Status, SyncCommand, SyncCoreConfig, SyncEvent, SyncHandle,
 };
+use crate::ui::components::nav_item::nav_item as nav_item_comp;
+use crate::ui::components::overlay::page_subtitle;
+use crate::ui::components::sync_pill as sync_pill_comp;
+use crate::ui::tokens::{SIDEBAR_BRAND_H, SIDEBAR_FOOTER_H, SIDEBAR_W, TOPBAR_H};
 use crate::ui::widgets::{Skin, eid};
 use crate::views;
 use crate::views::checkins::{CheckInDraft, CheckInEditor};
@@ -975,15 +979,8 @@ impl Render for App {
     }
 }
 
-fn render_sidebar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
-    let (fg, muted, primary, primary_fg, border) = (
-        skin.fg,
-        skin.muted,
-        skin.primary,
-        skin.primary_fg,
-        skin.border,
-    );
-    let bg = skin.sidebar;
+fn render_sidebar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement {
+    let theme = cx.theme();
     let this = cx.entity();
     let page = app.page;
     let name = if app.db.profile.student.is_empty() {
@@ -992,10 +989,55 @@ fn render_sidebar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
         format!("{}的课程", app.db.profile.student)
     };
     let grade = app.db.profile.grade.clone();
-    let today_label = model::fmt_date_cn(model::today());
     let today = model::today();
 
-    let mut items = div().flex().flex_col().gap(px(2.)).p_2();
+    // 品牌块：32×32 圆角方糖（"课" 字 + primary 色）+ 姓名 + 年级。
+    let brand = div()
+        .id("ui:brand:")
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(20.))
+        .h(SIDEBAR_BRAND_H)
+        .child(
+            div()
+                .size(px(32.))
+                .rounded(px(10.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.primary)
+                .child(
+                    div()
+                        .text_base()
+                        .font_weight(FontWeight(700.0))
+                        .text_color(theme.primary_foreground)
+                        .child("课"),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight(600.0))
+                        .text_color(theme.foreground)
+                        .child(name),
+                )
+                .when(!grade.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(grade.clone()),
+                    )
+                }),
+        );
+
+    // nav 列表（使用 `nav_item` 组件；测试 id 与 Phase 2 保持一致）。
+    let mut items = div().flex().flex_col().gap(px(0.)).p(px(8.));
     for p in Page::ALL {
         let active = p == page;
         let this = this.clone();
@@ -1009,182 +1051,127 @@ fn render_sidebar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 .count(),
             _ => 0,
         };
-
-        items = items.child(
-            div()
-                .id(eid("nav", p.label()))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .h(px(34.))
-                .px_3()
-                .rounded_md()
-                .cursor_pointer()
-                .bg(if active {
-                    primary.with_alpha(0.14)
-                } else {
-                    Hsla { a: 0.0, ..fg }
-                })
-                .hover(|s| {
-                    s.bg(if active {
-                        primary.with_alpha(0.20)
-                    } else {
-                        Hsla { a: 0.06, ..fg }
-                    })
-                })
-                .on_click(move |_e, _w, cx| {
-                    this.update(cx, |this, cx| this.goto(p, cx));
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Icon::new(p.icon())
-                                .with_size(Size::Small)
-                                .text_color(if active { primary } else { muted }),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(if active {
-                                    FontWeight(600.0)
-                                } else {
-                                    FontWeight(400.0)
-                                })
-                                .text_color(if active { fg } else { muted })
-                                .child(p.label()),
-                        ),
-                )
-                .when(badge > 0, |d| {
-                    d.child(
-                        div()
-                            .min_w(px(18.))
-                            .h(px(18.))
-                            .px_1()
-                            .rounded_full()
-                            .bg(primary)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(primary_fg)
-                                    .child(badge.to_string()),
-                            ),
-                    )
-                }),
-        );
+        items = items.child(nav_item_comp(
+            theme,
+            eid("nav", p.label()),
+            p.icon(),
+            p.label(),
+            active,
+            Some(badge),
+            move |_e, _w, cx| {
+                this.update(cx, |this, cx| this.goto(p, cx));
+            },
+        ));
     }
+
+    // 底部：日期 + compact 同步状态。
+    let footer = div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.))
+        .px(px(20.))
+        .h(SIDEBAR_FOOTER_H)
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(model::fmt_date_cn(today)),
+        )
+        .child(sync_pill_comp::sync_indicator_compact(
+            theme,
+            &app.sync_status,
+        ));
 
     div()
         .flex()
         .flex_col()
         .h_full()
-        .w(px(216.))
+        .w(SIDEBAR_W)
         .flex_shrink_0()
-        .bg(bg)
+        .bg(theme.sidebar)
         .border_r_1()
-        .border_color(border)
+        .border_color(theme.border)
+        .child(brand)
         .child(
             div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_4()
-                .py_4()
-                .child(
-                    div()
-                        .size(px(30.))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(primary)
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_semibold()
-                                .text_color(primary_fg)
-                                .child("课"),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_sm().font_semibold().text_color(fg).child(name))
-                        .when(!grade.is_empty(), |d| {
-                            d.child(div().text_xs().text_color(muted).child(grade.clone()))
-                        }),
-                ),
+                .id("ui:sidebar:nav")
+                .flex_1()
+                .overflow_y_scrollbar()
+                .child(items),
         )
-        .child(div().flex_1().overflow_y_scrollbar().child(items))
-        .child(
-            div()
-                .px_4()
-                .py_3()
-                .border_t_1()
-                .border_color(border)
-                .text_xs()
-                .text_color(muted)
-                .child(today_label),
-        )
+        .child(footer)
         .into_any_element()
 }
 
-fn render_topbar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
-    let (fg, muted, border) = (skin.fg, skin.muted, skin.border);
+fn render_topbar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement {
+    let theme = cx.theme();
     let this = cx.entity();
     let page = app.page;
-    let dark = cx.theme().is_dark();
+    let dark = theme.is_dark();
+    let subtitle = page_subtitle(page, &app.db);
 
-    div()
+    // 左：page icon + title + subtitle
+    let title_block = div()
         .flex()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .h(px(52.))
-        .px_5()
-        .flex_shrink_0()
-        .bg(skin.panel)
-        .border_b_1()
-        .border_color(border)
+        .flex_col()
+        .gap(px(2.))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(px(8.))
                 .child(
                     Icon::new(page.icon())
                         .with_size(Size::Small)
-                        .text_color(muted),
+                        .text_color(theme.primary),
                 )
                 .child(
                     div()
-                        .text_base()
-                        .font_semibold()
-                        .text_color(fg)
+                        .text_size(px(20.))
+                        .font_weight(FontWeight(700.0))
+                        .text_color(theme.foreground)
                         .child(page.label()),
                 ),
         )
         .child(
             div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(subtitle),
+        );
+
+    // 右：sync_pill + theme toggle (icon_only) + 快速添加 (primary)
+    let this_for_pill = this.clone();
+    let sync_pill_any = sync_pill_comp::sync_pill(theme, &app.sync_status, move |_e, _w, cx| {
+        this_for_pill.update(cx, |this, cx| {
+            this.goto(Page::Settings, cx);
+        });
+    })
+    .into_any_element();
+
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .h(TOPBAR_H)
+        .px(px(24.))
+        .flex_shrink_0()
+        .bg(theme.popover)
+        .border_b_1()
+        .border_color(theme.border)
+        .child(title_block)
+        .child(
+            div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(px(8.))
+                .child(sync_pill_any)
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(sync_status_line(&app.sync_status)),
-                )
-                .child(
-                    Button::new("toggle-theme")
+                    Button::new("ui:topbar:theme-toggle")
                         .ghost()
                         .compact()
                         .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
@@ -1194,16 +1181,11 @@ fn render_topbar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                             "切换到深色主题"
                         })
                         .on_click(move |_e, window, app| {
-                            let mode = if app.theme().is_dark() {
-                                ThemeMode::Light
-                            } else {
-                                ThemeMode::Dark
-                            };
-                            Theme::change(mode, Some(window), app);
+                            crate::theme::toggle_mode(Some(window), app);
                         }),
                 )
                 .child(
-                    Button::new("quick-add")
+                    Button::new("ui:topbar:quick-add")
                         .primary()
                         .compact()
                         .icon(Icon::new(IconName::Plus))
@@ -1214,17 +1196,4 @@ fn render_topbar(app: &App, skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 ),
         )
         .into_any_element()
-}
-
-/// 顶栏一行的同步状态文案（含上次同步时间）。
-fn sync_status_line(status: &Status) -> String {
-    match status {
-        Status::Idle {
-            last_sync_ms: Some(ms),
-        } => chrono::DateTime::from_timestamp_millis(*ms)
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
-            .map(|time| format!("已同步 · {time}"))
-            .unwrap_or_else(|| "已同步".to_string()),
-        other => other.label_cn().to_string(),
-    }
 }

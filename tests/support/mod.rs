@@ -111,6 +111,8 @@ impl Harness {
 
         // 组件层初始化（主题、按键绑定、全局状态）——对应 `lib.rs::run()` 的 `init(cx)`。
         cx.update(course_plan::gpui::init);
+        // 装载 CoursePlan 主题（与 `lib.rs::run()` 一致；幂等）。
+        cx.update(course_plan::theme::init);
         cx.update(|app| app.set_app_identity(APP_ID, "CoursePlan"));
 
         let handle = cx
@@ -137,10 +139,14 @@ impl Harness {
     }
 
     /// 切换主题。
+    ///
+    /// 走 `theme::apply_for_mode` 而非直接 `Theme::change`——后者命中 registry
+    /// 默认配置（gpui-component 内置），不会自动套用我们的 CoursePlan 调色板。
     pub fn set_theme(&mut self, mode: ThemeMode) {
         self.cx
             .update_window(self.window, |_, window, cx| {
                 Theme::change(mode, Some(window), cx);
+                course_plan::theme::apply_for_mode(cx);
             })
             .expect("切换主题失败");
         self.draw();
