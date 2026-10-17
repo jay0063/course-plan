@@ -6,7 +6,21 @@ use std::path::{Path, PathBuf};
 
 /// 数据目录。测试会向其中注入确定性数据；正常运行时存放 `data.json` /
 /// `sync.json` / `runtime_state.json`。
+///
+/// 若设置了非空的 `COURSEPLAN_DATA_DIR` 环境变量，则直接以该路径作为数据目录
+/// （受支持的测试/开发覆盖口，便于 E2E 与交互测试隔离数据，无需触碰用户真实数据）；
+/// 否则沿用 `directories` 推导出的默认位置。
 pub fn data_dir() -> PathBuf {
+    data_dir_from_override(std::env::var("COURSEPLAN_DATA_DIR").ok().as_deref())
+}
+
+/// `data_dir` 的纯逻辑：非空覆盖值 → 直接采用；`None` / 空串 → `directories` 默认目录。
+///
+/// 抽成纯函数以便对覆盖语义做确定性单测（避免进程级环境变量带来的偶发失败）。
+fn data_dir_from_override(override_dir: Option<&str>) -> PathBuf {
+    if let Some(dir) = override_dir.filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
     dirs().join("course-plan")
 }
 
@@ -355,6 +369,19 @@ pub fn sample_data() -> Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_dir_honors_nonempty_override_and_falls_back() {
+        // 非空覆盖值 → 原样使用。
+        assert_eq!(
+            data_dir_from_override(Some("/tmp/courseplan-probe")),
+            PathBuf::from("/tmp/courseplan-probe")
+        );
+        // 空串 / 未设置 → 回落到 directories 推导的默认目录。
+        let default = dirs().join("course-plan");
+        assert_eq!(data_dir_from_override(Some("")), default);
+        assert_eq!(data_dir_from_override(None), default);
+    }
 
     #[test]
     fn migrate_notified_for_moves_nonempty_values_and_merges() {

@@ -228,6 +228,13 @@ impl App {
     }
 
     pub fn goto(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.page != page {
+            // 换页即丢弃确认类弹层的挂起态（Gate 4 尾巴 / §7 已接受限制的收敛）：
+            // 删除确认挂在 GPUI Global（courses/schedule/events 共用）、打卡归档确认
+            // 挂在 thread-local——两者都不得跨页存活，否则离页再回时确认框会自己冒出来。
+            cx.set_global(views::courses::PendingDelete(None));
+            views::checkins::discard_archive_confirm();
+        }
         self.page = page;
         cx.notify();
     }

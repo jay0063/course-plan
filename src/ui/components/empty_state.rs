@@ -16,7 +16,8 @@ pub enum EmptyVariant {
     Illustrated,
     /// 列表内空态：padding-y 24，icon 32px。
     Compact,
-    /// 全部完成：Sparkle 56px + 右上角小星，强调"做得好"。
+    /// 全部完成：Sparkle 56px + 右上角小星，强调"做得好"；
+    /// 容器随内容收紧（不套 320×240 的大框）。
     Celebratory,
 }
 
@@ -56,9 +57,12 @@ pub fn empty_state(
         _ => theme.muted_foreground,
     };
 
+    // §3.11：Illustrated 用固定 320×240 容器；Celebratory 是浮层里的庆祝瞬间，
+    // 容器随内容收紧（padding 20 + 圆角 20），否则卡内会留下一圈空底。
     let container_padding_y = match variant {
-        EmptyVariant::Illustrated | EmptyVariant::Celebratory => px(40.),
+        EmptyVariant::Illustrated => px(40.),
         EmptyVariant::Compact => px(24.),
+        EmptyVariant::Celebratory => SPACE_XL,
     };
 
     let mut col = div()
@@ -70,11 +74,10 @@ pub fn empty_state(
         .py(container_padding_y)
         .px(SPACE_XL);
 
-    if matches!(
-        variant,
-        EmptyVariant::Illustrated | EmptyVariant::Celebratory
-    ) {
+    if matches!(variant, EmptyVariant::Illustrated) {
         col = col.min_h(px(240.)).w(px(320.)).mx_auto().rounded(px(20.));
+    } else if matches!(variant, EmptyVariant::Celebratory) {
+        col = col.rounded(px(20.));
     }
 
     let mut icon_block = div()

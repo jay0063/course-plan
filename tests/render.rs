@@ -19,6 +19,7 @@
 mod support;
 
 use course_plan::app::Page;
+use course_plan::gpui::ElementId;
 use course_plan::gpui::component::ThemeMode;
 use course_plan::gpui::test::TestWindowExt;
 
@@ -147,4 +148,104 @@ fn interaction_course_editor_smoke() {
         support::images_differ(&editor, &after_close),
         "关闭编辑器后画面应再次变化"
     );
+}
+
+/// 换页即清确认弹层（Gate 4 oracle 携带项）：删除确认挂在 GPUI `Global`、
+/// 打卡归档确认挂在 thread-local——离页再回时确认框不得「阴魂不散」。
+#[test]
+fn interaction_confirm_dialogs_clear_on_page_change() {
+    if !support::enabled() {
+        support::skip("interaction_confirm_dialogs_clear_on_page_change");
+        return;
+    }
+
+    let mut harness = support::Harness::new();
+    let app = harness.app.clone();
+
+    // MARK: 课程删除确认 → 切页 → 切回：确认框必须已被丢弃
+    harness.set_page(Page::Courses);
+    harness.set_theme(ThemeMode::Light);
+    harness.draw();
+    let course_id = harness
+        .cx
+        .update(|cx| app.read(cx).db.live_courses().next().map(|c| c.id.clone()))
+        .expect("示例数据里至少应有一门课程");
+
+    click(&mut harness, format!("course-del:{course_id}"));
+    harness.draw();
+    let ok_id = format!("delete-course:{course_id}:ok");
+    assert!(
+        in_tree(&mut harness, ok_id.clone()),
+        "点删除后确认框应出现（{ok_id}）"
+    );
+    let (_, open) = harness.capture_current("smoke-confirm-courses-open");
+
+    harness.set_page(Page::Dashboard);
+    harness.draw();
+    harness.set_page(Page::Courses);
+    harness.draw();
+    assert!(
+        !in_tree(&mut harness, ok_id.clone()),
+        "离页再回后删除确认框应已被丢弃（{ok_id}）"
+    );
+    let (return_path, returned) = harness.capture_current("smoke-confirm-courses-return");
+    assert!(
+        support::images_differ(&open, &returned),
+        "回到课程页后确认遮罩应消失（{}）",
+        return_path.display()
+    );
+
+    // MARK: 打卡归档确认 → 切页 → 切回：同样的清理
+    harness.set_page(Page::CheckIns);
+    harness.draw();
+    let checkin_id = harness
+        .cx
+        .update(|cx| app.read(cx).db.live_checkins().next().map(|c| c.id.clone()))
+        .expect("示例数据里至少应有一个打卡任务");
+
+    click(&mut harness, format!("checkin-arch-all:{checkin_id}"));
+    harness.draw();
+    let arch_ok = format!("checkin-arch:{checkin_id}:ok");
+    assert!(
+        in_tree(&mut harness, arch_ok.clone()),
+        "点归档后二次确认应出现（{arch_ok}）"
+    );
+    harness.capture_current("smoke-confirm-checkins-open");
+
+    harness.set_page(Page::Events);
+    harness.draw();
+    harness.set_page(Page::CheckIns);
+    harness.draw();
+    assert!(
+        !in_tree(&mut harness, arch_ok.clone()),
+        "离页再回后归档确认框应已被丢弃（{arch_ok}）"
+    );
+    let (arch_path, _) = harness.capture_current("smoke-confirm-checkins-return");
+    eprintln!(
+        "[render] 换页清理确认弹层：{} / {}",
+        return_path.display(),
+        arch_path.display()
+    );
+}
+
+/// 点击一个已渲染的元素（真实的命中测试 + 渲染一帧）。
+fn click(harness: &mut support::Harness, id: impl Into<ElementId>) {
+    let id = id.into();
+    let window = harness.window;
+    harness
+        .cx
+        .update_window(window, |_, window, cx| {
+            window.click(id, cx);
+        })
+        .expect("点击失败");
+}
+
+/// 元素是否在当前渲染树里。
+fn in_tree(harness: &mut support::Harness, id: impl Into<ElementId>) -> bool {
+    let id = id.into();
+    let window = harness.window;
+    harness
+        .cx
+        .update_window(window, |_, window, _| window.try_find(id).is_some())
+        .expect("读取渲染树失败")
 }

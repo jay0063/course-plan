@@ -280,6 +280,18 @@ pub fn apply_draft(db: &mut Database, draft: &EventDraft) {
     db.save_event(event);
 }
 
+/// 日期条顶行标签（§4.4）：±2 天内用相对日（今天 / 昨天 / 明天 / 后天），更远用
+/// 星期短名——2 个字不会像「10月15日」那样在 56px 单元格里折成两行；完整日期由
+/// 下一行的 `M/D` 承担。
+fn strip_day_label(date: NaiveDate) -> String {
+    let offset = (date - model::today()).num_days();
+    if (-1..=2).contains(&offset) {
+        model::relative_day(date)
+    } else {
+        model::WEEKDAY_LABELS[(model::iso_weekday(date) - 1) as usize].to_string()
+    }
+}
+
 pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let theme = cx.theme().clone();
     let this = cx.entity();
@@ -361,7 +373,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         } else {
                             theme.muted_foreground
                         })
-                        .child(model::relative_day(date)),
+                        .child(strip_day_label(date)),
                 )
                 .child(
                     div()

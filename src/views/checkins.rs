@@ -14,6 +14,7 @@ use gpui::component::scroll::ScrollableElement;
 use gpui::*;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -317,30 +318,112 @@ thread_local! {
     static CELEBRATION: Cell<u64> = const { Cell::new(0) };
     /// 归档二次确认的目标任务 id（视图瞬态，不落库、不占用 App 字段）。
     static ARCHIVE_CONFIRM: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// 弹跳记账：`{id}:{done}` → 本项当前弹跳的世代号。
+    ///
+    /// 只有记账里的打卡项才渲染一次性弹跳动画：`with_animation` 对首次出现的
+    /// ElementId 会从头播一遍，若把动画无条件挂上，首次挂载 / 页面重访时圆环
+    /// 会自己弹一下（Gate 4 尾巴）。记账在弹跳结束后失效，弹跳因此只在
+    /// 「刚点过」的项上播放。
+    static BURSTS: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+    /// 弹跳世代号发号器：同一项连点也每次重放（动画 id 带世代号）。
+    static BURST_SEQ: Cell<u64> = const { Cell::new(0) };
+}
+
+/// 弹跳记账 key：任务 id + 点击后的 done 状态。
+///
+/// **不含分区**：点「待打卡」列的圆环会让任务移到「今日已完成」列，登记的
+/// key 必须在别的列也能命中（同一状态的所有出现一起弹，与旧行为一致）；
+/// 分区前缀仍留在动画 ElementId 里，保证 §6.8 的唯一性。
+fn burst_key(id: &str, done: bool) -> String {
+    format!("{id}:{done}")
+}
+
+/// 打卡项刚被点击：记一次弹跳，`duration_slow` 后自动失效回到静默终态。
+pub(crate) fn note_burst(cx: &mut Context<App>, id: &str, done: bool) {
+    let duration = motion::tokens(cx.theme()).duration_slow;
+    let key = burst_key(id, done);
+    let seq = BURST_SEQ.with(|s| {
+        let next = s.get().wrapping_add(1).max(1);
+        s.set(next);
+        next
+    });
+    BURSTS.with(|m| {
+        m.borrow_mut().insert(key.clone(), seq);
+    });
+
+    let view = cx.entity();
+    cx.spawn(async move |_this, cx| {
+        // 略微超过动画时长再收账：收账那帧只把「动画元素」换回静默终态。
+        cx.background_executor()
+            .timer(duration + Duration::from_millis(60))
+            .await;
+        let cleared = BURSTS.with(|m| {
+            let mut m = m.borrow_mut();
+            // 只清自己那一次（期间若又点了一次，新世代号不能被旧计时器清掉）。
+            if m.get(&key) == Some(&seq) {
+                m.remove(&key);
+                true
+            } else {
+                false
+            }
+        });
+        if cleared {
+            view.update(cx, |_this, cx| cx.notify());
+        }
+    })
+    .detach();
+}
+
+/// 该项当前是否处于弹跳窗口（渲染时调用；世代号用于生成动画 id）。
+fn burst_gen(id: &str, done: bool) -> Option<u64> {
+    BURSTS.with(|m| m.borrow().get(&burst_key(id, done)).copied())
+}
+
+/// 页面切换时丢弃陈旧的归档二次确认（由 `App::goto` 调用）。
+///
+/// 确认框是视图瞬态（thread-local），不得跨页存活——离页再回时不该自己冒出来。
+pub(crate) fn discard_archive_confirm() {
+    ARCHIVE_CONFIRM.with(|c| *c.borrow_mut() = None);
+}
+
+/// 打卡勾选圆环几何：`pulse` 0→1 时圆环微胀 + 短促光晕（§3.17）。
+fn ring(theme: &Theme, done: bool, pulse: f32) -> Div {
+    div()
+        .w(px(CHECK_BOX))
+        .h(px(CHECK_BOX))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_FULL)
+        .bg(theme.success.with_alpha(CHECK_HALO_ALPHA * pulse))
+        .child(check_circle(
+            theme,
+            done,
+            px(CHECK_DIAMETER + CHECK_PULSE_PX * pulse),
+        ))
 }
 
 /// 打卡勾选圆环 + 短促光晕（§3.17：「弹一下 + 短促光晕」）。
 ///
-/// `anim_id` 必须随 done 状态变化，使每次勾选都重放一次弹跳。
-pub(crate) fn check_burst(theme: &Theme, done: bool, anim_id: ElementId) -> impl IntoElement {
-    let theme = theme.clone();
-    let animation = motion::bounce_animation(&theme);
-    div().with_animation(anim_id, animation, move |_, delta| {
-        let pulse = motion::bounce_pulse(delta);
-        div()
-            .w(px(CHECK_BOX))
-            .h(px(CHECK_BOX))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(RADIUS_FULL)
-            .bg(theme.success.with_alpha(CHECK_HALO_ALPHA * pulse))
-            .child(check_circle(
-                &theme,
-                done,
-                px(CHECK_DIAMETER + CHECK_PULSE_PX * pulse),
-            ))
-    })
+/// 只在 `id/done` 命中弹跳记账（= 刚被点击过）时播放；否则静默渲染终态。
+/// `region` 只用来让同一任务的多处出现（看板列 / 首页行）动画 id 互不相同（§6.8）。
+pub(crate) fn check_burst(theme: &Theme, done: bool, region: &str, id: &str) -> AnyElement {
+    match burst_gen(id, done) {
+        Some(seq) => {
+            let anim_theme = theme.clone();
+            ring(theme, done, 0.)
+                .with_animation(
+                    ElementId::from(format!(
+                        "checkin-burst:{region}:{}:{seq}",
+                        burst_key(id, done)
+                    )),
+                    motion::bounce_animation(theme),
+                    move |_el, delta| ring(&anim_theme, done, motion::bounce_pulse(delta)),
+                )
+                .into_any_element()
+        }
+        None => ring(theme, done, 0.).into_any_element(),
+    }
 }
 
 /// 当日全部打卡任务都已勾选（且至少有一项）。
@@ -448,7 +531,7 @@ fn task_card(
     view: &Entity<App>,
     item: &CheckIn,
     today: chrono::NaiveDate,
-    col_key: &str,
+    col_key: &'static str,
 ) -> AnyElement {
     let done = item.done_on(today);
     let streak = item.streak();
@@ -490,11 +573,7 @@ fn task_card(
         .id(eid(&format!("checkin-toggle-{col_key}"), &id))
         .cursor_pointer()
         .test_support()
-        .child(check_burst(
-            theme,
-            done,
-            ElementId::from(format!("checkin-burst:{col_key}:{id}:{done}")),
-        ))
+        .child(check_burst(theme, done, col_key, &id))
         .on_click(move |_e, window, cx| {
             let id = id_toggle.clone();
             this_toggle.update(cx, |this, cx| {
@@ -508,6 +587,8 @@ fn task_card(
                     if !was && all_today_done(&this.db, today) {
                         trigger_celebration(cx);
                     }
+                    // §3.17：弹跳只奖励这一次点击（不做首帧 / 重访重放）。
+                    note_burst(cx, &id, !was);
                 }
                 this.commit(window, cx);
             });

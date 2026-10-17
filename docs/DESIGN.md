@@ -424,7 +424,7 @@ API：`ui::components::progress::streak_badge(theme, days: usize)`：火焰图�
 API：`ui::components::empty_state::empty_state(theme, variant, icon, title, description?, action?)`。variants:
 - `Illustrated`：用于整页空态（dashboard/memos/reminders）。容器 320×240，居中，图标 56px `muted_foreground`，标题 20/600 `foreground`，描述 14 `muted_foreground`，底部 action 按钮。
 - `Compact`：用于列表内空态。容器 padding-y 24，icon 32px，标题 15/600，描述 12。
-- `Celebratory`：用于"全部完成"（checkin 全部 done）。**固定 `IconName::Sparkle` 56px `warning`**，右上角再叠一颗 20px `Sparkle`，标题 22/700。
+- `Celebratory`：用于"全部完成"（checkin 全部 done）。**固定 `IconName::Sparkle` 56px `warning`**，右上角再叠一颗 20px `Sparkle`，标题 22/700。容器**不套** Illustrated 的 320×240 大框——随内容收紧（padding 20、圆角 20，在浮层里居中），否则庆祝卡会大片留白。
 - 文案示例见 §1.3。
 - Phase 4 不得自定义空态结构，必须用此组件。
 
@@ -940,7 +940,7 @@ first-login cancel:"first-login:cancel"
 checkin toggle:    eid("checkin-toggle-pending"|"-done"|"-all", id)   → "checkin-toggle-pending:{id}"
 checkin edit:      eid("checkin-edit-{pending|done|all}", id)
 checkin archive:   eid("checkin-arch-{pending|done|all}", id)
-checkin burst 动画: "checkin-burst:{col}:{id}:{done}"                  // 动画 id 还要带 done 以重放
+checkin burst 动画: "checkin-burst:{col}:{id}:{done}:{gen}"             // {gen} 为点击世代号：点击才重放，首次挂载不挂动画
 ```
 
 同理，`tab_chips` / 过滤器生成的 id 是 `{prefix}:{label}`（中文 label 原样拼进去）：
@@ -979,7 +979,7 @@ DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须�
 
 **已接受的限制**（Phase 4 收官（v1.4）确认，不阻塞发布）：
 - **模态只压暗内容区**：`overlay` 挂在页面根（`absolute().inset_0()` 于 content 区，含删除确认与编辑器），侧栏 / 顶栏在模态打开时仍可点击。整窗压暗需要一个 shell 级 dialog host——推迟。
-- **删除确认请求状态用 GPUI `Global`**：`PendingDelete` 全局存 `{page, kind, id, name}`，由课程页 `request_delete` 写入、`discard_stale_delete` 负责跨页清理（切页丢弃陈旧请求）。`app.rs` 暂无对应字段槽位，保持现状。
+- **删除确认请求状态用 GPUI `Global`**：`PendingDelete` 全局存 `{page, kind, id, name}`；`App::goto` 在每次切页时清空它以及打卡页的归档确认状态（不再需要在各页 `discard_stale_delete`），因此切页返回不会重现旧对话框。`app.rs` 暂无对应字段槽位，保持现状。
 
 ---
 

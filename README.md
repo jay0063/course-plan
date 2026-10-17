@@ -3,7 +3,13 @@
 一个用 Rust + [GPUI Kit](https://gpui-kit.com) 写的跨平台桌面应用，帮家长把孩子的
 **学校课程**和**补习课程**管起来：录入课程 → 生成每周计划表 → 到点提醒 → 打卡记录。
 
-界面为中文，数据全部保存在本地，不联网。
+界面为中文，共 **8 个页面**（今日概览 / 课程管理 / 计划表 / 日程 / 提醒 / 打卡 / 备忘 / 设置）。
+应用**本地优先**：所有数据默认存在本机 JSON 文件，离线也能完整使用。
+在此基础上可选启用**自托管同步**（`docker compose` 拉起一个 Rust + SQLite 服务端），
+用家庭账号在多台设备之间收敛同一份数据。**任何情况下都不含遥测**。
+
+> 本地优先 = 数据默认只在本机；只有你主动在「设置 → 同步」里填写自己的服务器地址并登录后，
+> 才会有网络请求——目标是**你自己的**服务端，而不是第三方。
 
 ---
 
@@ -18,19 +24,30 @@
 | **提醒事项** | 支持「仅一次 / 每天 / 每周」重复，到期弹出系统通知，区分“即将到期”和“已超时” |
 | **打卡任务** | 三栏看板（待打卡 / 今日已完成 / 全部任务），记录连续天数、累计次数与完成率 |
 | **备忘笔记** | 彩色卡片，支持置顶，按更新时间排序 |
-| **设置** | 学生资料、学期起止、提醒开关、浅色/深色主题、数据统计与清空 |
+| **设置** | 学生资料、学期起止、提醒开关、浅色/深色主题、数据统计与清空，以及可选的同步配置 |
+| **同步** | 家庭账号（用户名 + 密码），实体级 LWW + 墓碑删除，多设备自动收敛；离线编辑后重连对齐 |
 
-首次启动会写入一份示例数据（7 门课程、16 条课表安排、4 个打卡任务、2 条备忘），
-打开即可看到完整效果。在「设置 → 清空全部数据」中可以还原为空白状态。
+启动后可在「设置 → 载入示例数据」一键灌入一套演示内容（课程、课表、打卡与备忘），
+在「设置 → 清空全部数据」中还原为空白状态。
+
+### 截图
+
+| 今日概览 | 课程管理 | 打卡任务 |
+| --- | --- | --- |
+| ![今日概览](docs/screenshots/dashboard.png) | ![课程管理](docs/screenshots/courses.png) | ![打卡任务](docs/screenshots/checkins.png) |
+
+> 截图由无头渲染测试生成（见下文「质量检查」），可直接复现。
 
 ---
 
 ## 技术栈
 
-* **Rust 2024** + [GPUI Kit 0.7](https://gpui-kit.com)（GPUI 的组件库封装）
+* **Rust 2024** + [GPUI Kit 0.7.3](https://gpui-kit.com)（GPUI 的组件库封装，版本锁定）
 * 图标为 Lucide，内嵌在二进制中
-* 数据持久化：单个 JSON 文件，原子写入（先写 `.tmp` 再 `rename`）
-* 无网络请求，无遥测
+* 客户端：单二进制桌面应用，数据持久化到本地 JSON 文件，原子写入（先写 `.tmp` 再 `rename`）
+* 服务端（可选）：Rust + [axum](https://github.com/tokio-rs/axum) + SQLite，单容器部署
+* 设计系统：见 [`docs/DESIGN.md`](docs/DESIGN.md)（“活力儿童向”，冻结版规范）
+* 同步协议：见 [`docs/SYNC-PROTOCOL.md`](docs/SYNC-PROTOCOL.md)（v1.2 冻结真源）
 
 ---
 
@@ -67,7 +84,63 @@ Linux 上必须在图形会话（Wayland 或 X11）里运行，并且需要可�
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build --release --locked
+
+# 无头渲染 + 截图（默认跳过；需 GPU/Vulkan 环境）。产物：target/visual/*.png
+COURSEPLAN_VISUAL=1 cargo test --test render
 ```
+
+---
+
+## 同步服务端（可选）
+
+需要一台可长期运行的 Linux 主机（VPS / NAS / 家用服务器均可），
+安装 Docker Engine ≥ 24 与 Docker Compose v2。完整指南见
+[`docs/DEPLOY.md`](docs/DEPLOY.md)，这里是最短路径：
+
+```bash
+# 1) 准备环境变量：复制模板，填入随机 JWT_SECRET（必填，缺失时服务端启动失败）
+cp .env.example .env
+openssl rand -hex 32        # 把输出填进 .env 的 JWT_SECRET=
+
+# 2) 构建并启动（默认明文 HTTP，监听 :8080）
+docker compose up -d --build
+curl -fsS http://127.0.0.1:8080/api/health   # {"status":"ok",...}
+
+# 3) 启用 HTTPS（强推荐）—— 叠加 Caddy 自动申请证书
+#    先在 .env 里填 COURSEPLAN_DOMAIN（域名需已解析到本机、放通 80/443），
+#    并把 COURSEPLAN_BIND 改为 127.0.0.1，避免明文 8080 端口仍对外可达。
+cp deploy/Caddyfile.example deploy/Caddyfile
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+```
+
+启动后，在客户端打开「**设置 → 同步**」，填写**服务器地址**（如 `http://<主机>:8080`
+或 `https://<域名>`）、用户名与密码，点「注册」创建家庭账号或点「登录」接入已有账号，
+即可多设备收敛。HTTPS、备份、升级与排障等详见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
+---
+
+## 数据存放位置
+
+运行时会写入数据目录下的三个文件：
+
+| 文件 | 内容 | 是否同步 |
+| --- | --- | --- |
+| `data.json` | 课程、课表、日程、提醒、打卡、备忘等业务数据 | ✅ 同步到你的服务端 |
+| `sync.json` | 服务器地址、账号凭据 / Token、设备标识、同步游标（权限 `0600`） | ❌ 本机凭据 |
+| `runtime_state.json` | 设备本地运行态（如提醒「已通知」记账） | ❌ 仅本机 |
+
+各平台默认数据目录：
+
+| 平台 | 路径 |
+| --- | --- |
+| Linux | `~/.local/share/courseplan/course-plan/` |
+| macOS | `~/Library/Application Support/com.courseplan.course-plan/` |
+| Windows | `%APPDATA%\courseplan\course-plan\` |
+
+> **覆盖数据目录**：设置非空的 `COURSEPLAN_DATA_DIR` 环境变量即可直接指定数据目录
+> （便于开发、测试与数据隔离），例如 `COURSEPLAN_DATA_DIR=/tmp/cp cargo run`。
+
+卸载应用不会删除数据文件，需要时可在设置页手动清空。
 
 ---
 
@@ -75,6 +148,7 @@ cargo build --release --locked
 
 完整的多平台编译说明见 [`packaging/CROSS-COMPILE.md`](packaging/CROSS-COMPILE.md)。
 一句话版本：**每个平台都在各自的系统上构建**（GPUI 的图形后端不同）。
+服务端打包/部署见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
 ### Linux（CachyOS / Debian / Ubuntu / Arch）
 
@@ -121,39 +195,35 @@ ARCH=x86_64  ./packaging/macos/build-macos.sh   # Intel
 ### CI
 
 `.github/workflows/release.yml` 用 GitHub Actions 的 matrix 同时构建
-Linux / Windows / macOS(arm64 + x86_64)，推 tag 即发布。
+Linux / Windows / macOS(arm64 + x86_64)，推 tag 即发布；
+`.github/workflows/server.yml` 负责服务端镜像的构建与检查。
 
 ---
 
 ## 项目结构
 
-```
-src/
-├── main.rs           # 入口：初始化、窗口、身份
-├── app.rs            # 应用外壳：侧边栏、顶栏、导航、提醒循环
-├── model.rs          # 数据模型：课程/课表/日程/提醒/打卡/备忘
-├── store.rs          # 持久化：JSON 读写 + 首次运行的示例数据
-├── prelude.rs        # 统一的 import 集合
-├── ui/
-│   ├── widgets.rs    # 卡片、统计块、标签、配色板 Skin 等
-│   ├── select.rs     # 自定义下拉选择器
-│   └── form.rs       # 表单行
-└── views/
-    ├── dashboard.rs  # 今日概览
-    ├── courses.rs    # 课程管理
-    ├── schedule.rs   # 计划表（周课表网格）
-    ├── events.rs     # 日程安排
-    ├── reminders.rs  # 提醒事项
-    ├── checkins.rs   # 打卡任务（看板）
-    ├── memos.rs      # 备忘笔记
-    └── settings.rs   # 设置
+Cargo **workspace**：根包是客户端桌面应用，另有两个成员 crate。
+（`cargo run` 默认运行客户端；服务端二进制为 `course-plan-server`。）
 
-packaging/
-├── icons/            # SVG 源图 + 各尺寸 PNG + .ico / .icns
-├── linux/            # desktop entry、AppRun、AppImage 与 deb 打包脚本
-├── windows/          # Inno Setup 脚本 + PowerShell 打包脚本
-├── macos/            # Info.plist + .app/.dmg 打包脚本
-└── CROSS-COMPILE.md  # 跨平台编译指南
+```
+src/                          # 客户端（根包 course-plan）
+├── main.rs                   # 入口：初始化、窗口、身份、同步 worker 装配
+├── app.rs                    # 应用外壳：侧边栏、顶栏、导航、提醒循环、同步编排
+├── model.rs                  # 数据模型：课程/课表/日程/提醒/打卡/备忘
+├── store.rs                  # 持久化：data.json / sync.json / runtime_state.json
+├── theme.rs                  # 主题（浅/深色）与设计令牌落地
+├── sync/                     # 同步引擎（核心时序 + HTTP worker）与测试
+├── ui/                       # 设计系统组件、令牌、配色板、表单/下拉等
+└── views/                    # 8 个页面（dashboard / courses / schedule / events /
+                              #   reminders / checkins / memos / settings）
+
+crates/
+├── sync-proto/               # 客户端/服务端共享的同步协议类型
+└── server/                   # 同步服务端（axum + SQLite）+ Dockerfile + migrations
+
+tests/                        # 集成测试：收敛（真实服务端）、无头渲染、图标、视图
+packaging/                    # 各平台打包脚本、图标、desktop entry、跨平台指南
+docs/                         # 设计系统 / 同步协议 / 部署指南 / 实施计划
 ```
 
 ### 架构约定
@@ -162,29 +232,23 @@ packaging/
   需要交互的局部状态（输入框、下拉框）各自是一个 `Entity<...>` 视图。
 * 编辑器通过 `Rc<dyn Fn(Draft, &mut Window, &mut gpui::App)>` 回调把结果交回 `App`，
   `App` 负责校验、写库和提示。
-* 所有写操作都走 `App::commit`，它负责保存 JSON 并弹通知，失败不会丢数据。
-
----
-
-## 数据存放位置
-
-| 平台 | 路径 |
-| --- | --- |
-| Linux | `~/.local/share/courseplan/course-plan/data.json` |
-| macOS | `~/Library/Application Support/com.courseplan.course-plan/data.json` |
-| Windows | `%APPDATA%\courseplan\course-plan\data.json` |
-
-卸载应用不会删除数据文件，需要时可在设置页手动清空。
+* 所有本地写操作都走 `App::commit`，它负责保存 JSON 并弹通知，失败不会丢数据。
+* 同步只由 UI 线程读写落盘文件，`sync/` worker 只负责 HTTP 请求与轮次时序
+  （协议细节见 [`docs/SYNC-PROTOCOL.md`](docs/SYNC-PROTOCOL.md)）。
 
 ---
 
 ## 已知限制
 
-* 图标只在带文字的控件里绘制，纯图标按钮在 GPUI Kit 0.7.1 上不显示，
-  因此行内操作统一使用「编辑 / 删除」文字按钮（同时对读屏软件更友好）。
+* 模态对话框只压暗内容区（侧栏与顶栏在打开时仍可交互）；整窗压暗需要 shell 级
+  dialog host，已作为后续项记录在 `docs/DESIGN.md` §7。
+* 无头截图测试需要可用的 Vulkan/GL 适配器（无 GPU 环境会自动跳过）；
+  Linux 上可用 lavapipe 软件渲染，见「质量检查」。
 * 提醒循环每 30 秒轮询一次，精度到分钟级；系统通知依赖平台的通知服务，
   Linux 上需要 `libnotify`/桌面通知守护进程。
 * 课程表按「每周重复」建模，暂不支持单周调课与节假日例外。
+* 同步服务端不含限流/风控、账号找回与端到端加密（见 `docs/PLAN.md` 非目标），
+  **请勿把明文 HTTP 端口直接暴露到不受信任网络**——生产部署务必启用 HTTPS。
 
 ## 许可
 

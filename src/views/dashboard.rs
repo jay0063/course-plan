@@ -25,7 +25,7 @@ use crate::ui::tokens::{
     RADIUS_FULL, RADIUS_MD, RADIUS_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
 use crate::ui::widgets::eid;
-use crate::views::checkins::check_burst;
+use crate::views::checkins::{check_burst, note_burst};
 
 /// 柱形图几何（§3.16 保留手写图表；高度按比例算，属 §1.2「一次性像素」例外）。
 const CHART_H: f32 = 120.;
@@ -238,6 +238,8 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         .map(|x| x.done_on(today));
                     if let Some(was) = was {
                         this.db.set_checkin_done(&id, today, !was);
+                        // §3.17：弹跳只奖励这一次点击（不做首帧 / 重访重放）。
+                        note_burst(cx, &id, !was);
                     }
                     this.commit(window, cx);
                 });
@@ -246,11 +248,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                 &theme,
                 eid("dash-checkin-row", &c.id),
                 None::<fn(&ClickEvent, &mut Window, &mut gpui::App)>,
-                Some(check_burst(
-                    &theme,
-                    done,
-                    ElementId::from(format!("dash-checkin-burst:{}:{}", c.id, done)),
-                )),
+                Some(check_burst(&theme, done, "dash", &c.id)),
                 c.title.clone(),
                 None::<SharedString>,
                 (streak > 0).then(|| streak_badge(&theme, streak)),

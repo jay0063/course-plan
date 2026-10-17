@@ -26,9 +26,7 @@ use crate::ui::components::tab_chips::tab_chips;
 use crate::ui::components::tag::chip;
 use crate::ui::form::field_row;
 use crate::ui::palette::palette_at_for;
-use crate::ui::tokens::{
-    INPUT_H, RADIUS_LG, RADIUS_MD, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
-};
+use crate::ui::tokens::{INPUT_H, RADIUS_LG, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS};
 use crate::ui::widgets::{close_editor, eid, panel};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,7 +91,7 @@ impl MemoEditor {
         let editor = Self {
             owner,
             draft: draft.clone(),
-            title: cx.new(|cx| InputState::new(window, cx).placeholder("标题")),
+            title: cx.new(|cx| InputState::new(window, cx).placeholder("如：考试范围、家长会要点")),
             content: cx.new(|cx| TextareaState::new(window, cx).placeholder("写点什么…")),
             color: draft.color,
             on_save: Rc::new(on_save),
@@ -163,16 +161,13 @@ impl Render for MemoEditor {
             .flex()
             .flex_col()
             .gap(SPACE_LG)
-            .child(Input::new(&title).h(INPUT_H).w_full())
-            .child(
-                div()
-                    .w_full()
-                    .min_h(px(160.))
-                    .rounded(RADIUS_MD)
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(Textarea::new(&content).w_full()),
-            )
+            .child(field_row("标题", Input::new(&title).h(INPUT_H).w_full()))
+            .child(field_row(
+                // 单层边框（§3.15）：不再给 Textarea 套第二个带边框的壳——双层框 +
+                // min_h 曾让框底拖出一截空白（Gate 4 SHOULD-FIX）。
+                "内容",
+                Textarea::new(&content).w_full(),
+            ))
             .child(field_row("颜色", swatches));
 
         let footer = div()
