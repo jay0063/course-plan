@@ -13,7 +13,8 @@ use crate::ui::tokens::{NAV_ITEM_H, RADIUS_MD};
 ///
 /// `badge` 是 `(count, semantic_fill)`：过期为 `theme.danger`、待打卡为
 /// `theme.warning`——**不再**根据 active 状态决定颜色。
-/// active 时图标/文字用 `primary`，左缘 3px 圆角竖条。
+/// active 时图标/文字用 `foreground`（深墨，在 list_active 上 ≥11:1），
+/// 左缘 3px 圆角竖条与底色 `list_active` 承担强调色（DESIGN §3.1.1）。
 pub fn nav_item(
     theme: &Theme,
     id: ElementId,
@@ -26,12 +27,12 @@ pub fn nav_item(
     let label = label.into();
 
     let icon_color = if active {
-        theme.primary
+        theme.foreground
     } else {
         theme.muted_foreground
     };
     let text_color = if active {
-        theme.primary
+        theme.foreground
     } else {
         theme.muted_foreground
     };

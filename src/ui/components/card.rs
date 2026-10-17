@@ -39,7 +39,13 @@ pub fn card_with_theme(
 
     match variant {
         CardVariant::Default => {
-            card_div = card_div.bg(panel_helper::panel(theme)).rounded(RADIUS_LG);
+            // §3.7：hover 用 border_strong（ThemeColor.input）表达"被注意"，
+            // 不抬升（DESIGN §2.9）。
+            let hover_border = theme.input;
+            card_div = card_div
+                .bg(panel_helper::panel(theme))
+                .rounded(RADIUS_LG)
+                .hover(move |s| s.border_color(hover_border));
         }
         CardVariant::Flat => {}
         CardVariant::Outlined => {

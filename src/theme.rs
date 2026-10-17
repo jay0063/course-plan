@@ -556,7 +556,8 @@ pub(crate) fn light_palette() -> ThemeColor {
     let border = hex_color("#EADFC8");
     let border_strong = hex_color("#D9C8A3");
     let foreground = hex_color("#2A2620");
-    let muted_foreground = hex_color("#7A6F60");
+    // 次级文字在 sidebar 上必须 ≥4.5（#7A6F60 只有 4.16）——见 DESIGN §2.1/§5.1。
+    let muted_foreground = hex_color("#726758");
     let muted = hex_color("#F1E8D5");
     let primary = hex_color("#F08A36");
     let primary_hover = hex_color("#E27A28");
@@ -568,10 +569,16 @@ pub(crate) fn light_palette() -> ThemeColor {
     let secondary_foreground = hex_color("#5A4422");
     let accent = hex_color("#3478AC"); // 加深保证白字 AA（DESIGN §2.1 注：原 #5AA9E6 仅用于链接/徽标 tint）
     let accent_foreground = hex_color("#FFFFFF");
+    // 链接文字色：从 accent 再加深一档，保证在 panel（5.63）与 surface（5.36）
+    // 上都 ≥4.5；primary 作链接只有 ~2.4，见 DESIGN §2.1/§5.1。
+    let link = hex_color("#2E6A99");
+    let link_hover = hex_color("#2A5F8A");
+    let link_active = hex_color("#24537A");
     // success / warning / danger 都在浅色下用深一档的 fill + 白字，保证 AA ≥4.5。
     let success = hex_color("#3D8246");
     let success_foreground = hex_color("#FFFFFF");
-    let warning = hex_color("#8F6612");
+    // 比旧 #8F6612 更亮一档（去"泥"）：白字 4.95、在 panel/surface 上作文字仍 ≥4.5。
+    let warning = hex_color("#9A650F");
     let warning_foreground = hex_color("#FFFFFF");
     let danger = hex_color("#9C2929");
     let danger_foreground = hex_color("#FFFFFF");
@@ -649,9 +656,9 @@ pub(crate) fn light_palette() -> ThemeColor {
         info_foreground,
         info_hover: info.darken(0.05),
         input: border_strong,
-        link: primary,
-        link_active: primary_active,
-        link_hover: primary_hover,
+        link,
+        link_active,
+        link_hover,
         list: panel,
         list_active,
         list_active_border: primary.with_alpha(0.50),
@@ -678,7 +685,7 @@ pub(crate) fn light_palette() -> ThemeColor {
         selection,
         sidebar,
         sidebar_accent: list_active,
-        sidebar_accent_foreground: primary,
+        sidebar_accent_foreground: foreground,
         sidebar_border: border,
         sidebar_foreground: foreground,
         sidebar_primary: primary,
@@ -748,6 +755,10 @@ pub(crate) fn dark_palette() -> ThemeColor {
     let secondary_foreground = foreground;
     let accent = hex_color("#7FBFEE");
     let accent_foreground = hex_color("#0F1F2E");
+    // 暗色链接：直接用 accent（panel 上 7.96:1）；hover 提亮、active 压暗。
+    let link = hex_color("#7FBFEE");
+    let link_hover = hex_color("#97CBF3");
+    let link_active = hex_color("#6AABE0");
     let success = hex_color("#7CCE89");
     let success_foreground = hex_color("#0E2410");
     let warning = hex_color("#FFC664");
@@ -826,9 +837,9 @@ pub(crate) fn dark_palette() -> ThemeColor {
         info_foreground,
         info_hover: info.darken(0.05),
         input: border_strong,
-        link: primary,
-        link_active: primary_active,
-        link_hover: primary_hover,
+        link,
+        link_active,
+        link_hover,
         list: panel,
         list_active,
         list_active_border: primary.with_alpha(0.60),
@@ -855,7 +866,7 @@ pub(crate) fn dark_palette() -> ThemeColor {
         selection,
         sidebar,
         sidebar_accent: list_active,
-        sidebar_accent_foreground: primary,
+        sidebar_accent_foreground: foreground,
         sidebar_border: border,
         sidebar_foreground: foreground,
         sidebar_primary: primary,
@@ -955,14 +966,17 @@ mod tests {
         assert_eq_hex(
             "muted_foreground",
             &hsla_to_hex(lp.muted_foreground),
-            "#7A6F60",
+            "#726758",
         );
         // 加深的 fill（保证白字 AA ≥4.5）
         assert_eq_hex("accent (darkened)", &hsla_to_hex(lp.accent), "#3478AC");
         assert_eq_hex("success (darkened)", &hsla_to_hex(lp.success), "#3D8246");
-        assert_eq_hex("warning (darkened)", &hsla_to_hex(lp.warning), "#8F6612");
+        assert_eq_hex("warning (darkened)", &hsla_to_hex(lp.warning), "#9A650F");
         assert_eq_hex("danger (darkened)", &hsla_to_hex(lp.danger), "#9C2929");
         assert_eq_hex("muted", &hsla_to_hex(lp.muted), "#F1E8D5");
+        assert_eq_hex("link", &hsla_to_hex(lp.link), "#2E6A99");
+        assert_eq_hex("link_hover", &hsla_to_hex(lp.link_hover), "#2A5F8A");
+        assert_eq_hex("link_active", &hsla_to_hex(lp.link_active), "#24537A");
         assert_eq!(
             hsla_to_hex_full(lp.selection),
             "#F08A363D",
@@ -988,6 +1002,9 @@ mod tests {
             "#A89A82",
         );
         assert_eq_hex("dark accent", &hsla_to_hex(dp.accent), "#7FBFEE");
+        assert_eq_hex("dark link", &hsla_to_hex(dp.link), "#7FBFEE");
+        assert_eq_hex("dark link_hover", &hsla_to_hex(dp.link_hover), "#97CBF3");
+        assert_eq_hex("dark link_active", &hsla_to_hex(dp.link_active), "#6AABE0");
         assert_eq_hex("dark success", &hsla_to_hex(dp.success), "#7CCE89");
         assert_eq_hex("dark warning", &hsla_to_hex(dp.warning), "#FFC664");
         assert_eq_hex("dark danger", &hsla_to_hex(dp.danger), "#F08B8B");
@@ -1099,12 +1116,12 @@ mod tests {
         check("light primary_ink on primary", "#1F1612", "#F08A36", 4.5);
         check("light accent_white on accent", "#FFFFFF", "#3478AC", 4.5);
         check("light success_white on success", "#FFFFFF", "#3D8246", 4.5);
-        check("light warning_white on warning", "#FFFFFF", "#8F6612", 4.5);
+        check("light warning_white on warning", "#FFFFFF", "#9A650F", 4.5);
         check("light danger_white on danger", "#FFFFFF", "#9C2929", 4.5);
         check("light foreground on surface", "#2A2620", "#FBF6EC", 7.0);
         check(
             "light muted_foreground on surface",
-            "#7A6F60",
+            "#726758",
             "#FBF6EC",
             4.5,
         );
@@ -1122,6 +1139,89 @@ mod tests {
         check("dark danger_fg on danger", "#2E0F0F", "#F08B8B", 4.5);
         check("dark warning_fg on warning", "#3D2A0F", "#FFC664", 4.5);
         check("dark accent_fg on accent", "#0F1F2E", "#7FBFEE", 4.5);
+    }
+
+    /// Shell 与链接对的 WCAG AA（DS-3 补测）。
+    ///
+    /// 这些组合不是"实心 fill + 固定前景"，旧的 WCAG 测试完全没覆盖，
+    /// 导致 active nav 1.83:1、button::link 2.4:1 溜过 Gate 3。
+    /// 语义：
+    /// - active nav：`foreground` 落在 `list_active`（α）叠 `sidebar` 的实际底色上；
+    /// - inactive nav：`muted_foreground` on `sidebar`；
+    /// - link：`link` / `link_hover` / `link_active` on `panel` 与 `surface`。
+    #[test]
+    fn wcag_aa_shell_nav_and_link_pairs() {
+        use crate::ui::components::tag::composite;
+
+        fn check(label: &str, fg: Hsla, bg: Hsla, min: f32) {
+            let cr = contrast_ratio(fg, bg);
+            assert!(
+                cr >= min,
+                "{label}: cr={cr:.2}（期望 ≥{min}）fg={} bg={}",
+                hsla_to_hex_full(fg),
+                hsla_to_hex_full(bg)
+            );
+        }
+
+        for (mode, p) in [("light", light_palette()), ("dark", dark_palette())] {
+            // active nav 的实际底色 = list_active(α) 叠在 sidebar 上。
+            let active_bg = composite(p.list_active, p.sidebar);
+            check(
+                &format!("{mode} active nav ink on list_active/sidebar"),
+                p.foreground,
+                active_bg,
+                4.5,
+            );
+            // `sidebar_accent_foreground` 必须与 active nav 文字一致（都是 foreground）。
+            check(
+                &format!("{mode} sidebar_accent_foreground on list_active/sidebar"),
+                p.sidebar_accent_foreground,
+                active_bg,
+                4.5,
+            );
+
+            // inactive nav（以及侧栏 footer 的次级文字）。
+            check(
+                &format!("{mode} inactive nav muted on sidebar"),
+                p.muted_foreground,
+                p.sidebar,
+                4.5,
+            );
+            check(
+                &format!("{mode} muted on surface"),
+                p.muted_foreground,
+                p.background,
+                4.5,
+            );
+            check(
+                &format!("{mode} muted on panel"),
+                p.muted_foreground,
+                p.popover,
+                4.5,
+            );
+            // Sidebar footer / sync pill（Offline/LoggedOut）：muted_foreground on muted。
+            check(
+                &format!("{mode} muted on muted（sync pill offline）"),
+                p.muted_foreground,
+                p.muted,
+                4.5,
+            );
+
+            // button::link 出现在 card（panel）与整页底（surface）上。
+            for (name, color) in [
+                ("link", p.link),
+                ("link_hover", p.link_hover),
+                ("link_active", p.link_active),
+            ] {
+                check(&format!("{mode} {name} on panel"), color, p.popover, 4.5);
+                check(
+                    &format!("{mode} {name} on surface"),
+                    color,
+                    p.background,
+                    4.5,
+                );
+            }
+        }
     }
 
     /// `theme_config_colors_from` 的键集合必须与 vendor `ThemeConfigColors` 完全一致。

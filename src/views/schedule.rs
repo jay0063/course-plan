@@ -294,7 +294,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
 
     // MARK: 周课表网格
 
-    let mut grid = div().flex().flex_col().gap_1().min_w(px(672.));
+    // 7 列内容宽：56（时间槽列）+ 7×88（日列）+ 6×4（列间距）= 696。
+    // 小于 696 时最右一列会在滚动容器内被裁切（DESIGN §4.3/§8）。
+    let mut grid = div().flex().flex_col().gap_1().min_w(px(696.));
 
     // 表头
     let mut header = div()

@@ -851,6 +851,191 @@ async fn local_wins_tombstones_use_bumped_base_when_server_ahead() {
     );
 }
 
+// ─────────────────────────── 首登「稍后决定」───────────────────────────
+
+fn has_round_started(events: &[SyncEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, SyncEvent::RoundStarted { .. }))
+}
+
+fn has_probe_result(events: &[SyncEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, SyncEvent::ProbeResult { .. }))
+}
+
+/// 登录 → 探针，返回探针轮次 id。
+async fn login_to_probe(core: &mut SyncCore<FakeApi>) -> u64 {
+    let events = core
+        .handle(SyncCommand::Login {
+            server_url: "http://test".into(),
+            username: "u".into(),
+            password: "password123".into(),
+            register: false,
+        })
+        .await;
+    events
+        .iter()
+        .find_map(|event| match event {
+            SyncEvent::ProbeResult { round_id, .. } => Some(*round_id),
+            _ => None,
+        })
+        .expect("登录后应有探针结果")
+}
+
+fn probe_response(latest_seq: u64) -> PullResponse {
+    PullResponse {
+        changes: Vec::new(),
+        latest_seq,
+        has_more: false,
+        server_time_ms: 2_000,
+    }
+}
+
+#[tokio::test]
+async fn defer_first_login_returns_to_idle_and_keeps_cursors() {
+    let api = FakeApi::default();
+    api.set_auth(Ok(auth_response()));
+    api.push_pull(Ok(probe_response(3)));
+    let (_clock, clock_fn) = fake_clock(10_000);
+    // 已持久化游标 7：首登暂缓不得重置它。
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 7));
+
+    let round_id = login_to_probe(&mut core).await;
+    // 探针更新了 watermark（server_time_ms），暂缓后应保持不变。
+    assert_eq!(core.last_server_time_ms, Some(2_000));
+
+    let events = core.handle(SyncCommand::DeferFirstLogin { round_id }).await;
+
+    assert!(matches!(core.phase, Phase::Idle), "暂缓后应回到 Idle 相位");
+    assert!(!core.pending, "暂缓应清空 pending");
+    assert!(
+        !matches!(core.status(), Status::Syncing),
+        "暂缓后不得停留在 Syncing：{:?}",
+        core.status()
+    );
+    assert_eq!(core.last_seq(), 7, "暂缓不得重置游标");
+    assert_eq!(core.last_server_time_ms, Some(2_000), "暂缓不得改动水位");
+    assert!(core.first_login_deferred, "应置首登暂缓标志");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, SyncEvent::StatusChanged(Status::Idle { .. }))),
+        "应向 UI 报告 Idle"
+    );
+}
+
+#[tokio::test]
+async fn deferred_first_login_blocks_automatic_rounds() {
+    let api = FakeApi::default();
+    api.set_auth(Ok(auth_response()));
+    api.push_pull(Ok(probe_response(3)));
+    let (clock, clock_fn) = fake_clock(10_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+
+    let round_id = login_to_probe(&mut core).await;
+    core.handle(SyncCommand::DeferFirstLogin { round_id }).await;
+    let pulls_after_defer = api.pulls().len();
+
+    // 越过 5 分钟周期点：tick 不得开轮 / 探针。
+    clock.store(10_000 + PERIODIC_MS + 1, Ordering::Relaxed);
+    let ticked = core.tick().await;
+    assert!(!has_round_started(&ticked), "暂缓期间周期 tick 不得开轮");
+    assert!(!has_probe_result(&ticked), "暂缓期间周期 tick 不得探针");
+
+    // LocalChanged → 防抖到点仍不得开轮。
+    let now = clock.load(Ordering::Relaxed);
+    core.handle(SyncCommand::LocalChanged).await;
+    clock.store(now + DEBOUNCE_MS + 1, Ordering::Relaxed);
+    let debounced = core.tick().await;
+    assert!(
+        !has_round_started(&debounced),
+        "暂缓期间防抖到点不得开轮：{debounced:?}"
+    );
+    assert!(!has_probe_result(&debounced), "暂缓期间防抖不得探针");
+    assert_eq!(
+        api.pulls().len(),
+        pulls_after_defer,
+        "暂缓期间不得发起任何网络 pull"
+    );
+    assert!(matches!(core.phase, Phase::Idle), "仍应保持 Idle 相位");
+    assert!(
+        !matches!(core.status(), Status::Syncing),
+        "仍不得处于 Syncing：{:?}",
+        core.status()
+    );
+}
+
+#[tokio::test]
+async fn manual_sync_now_while_deferred_reruns_probe() {
+    let api = FakeApi::default();
+    api.set_auth(Ok(auth_response()));
+    api.push_pull(Ok(probe_response(3)));
+    api.push_pull(Ok(probe_response(9)));
+    let (_clock, clock_fn) = fake_clock(10_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 0));
+
+    let round_id = login_to_probe(&mut core).await;
+    core.handle(SyncCommand::DeferFirstLogin { round_id }).await;
+    assert!(core.first_login_deferred);
+
+    let events = core.handle(SyncCommand::SyncNow).await;
+
+    assert!(!core.first_login_deferred, "手动 SyncNow 应清除暂缓");
+    let fresh = events
+        .iter()
+        .find_map(|event| match event {
+            SyncEvent::ProbeResult { round_id, .. } => Some(*round_id),
+            _ => None,
+        })
+        .expect("手动 SyncNow 应重新探针并发出 ProbeResult");
+    assert_ne!(fresh, round_id, "应是一个新的探针轮次");
+    assert!(
+        matches!(core.phase, Phase::AwaitPolicy { round_id: rid, .. } if rid == fresh),
+        "探针后应再次等待策略选择"
+    );
+    assert_eq!(api.pulls().len(), 2, "应重新拉取一次探针");
+}
+
+#[tokio::test]
+async fn stale_defer_first_login_is_ignored() {
+    let api = FakeApi::default();
+    api.set_auth(Ok(auth_response()));
+    api.push_pull(Ok(probe_response(3)));
+    let (_clock, clock_fn) = fake_clock(10_000);
+    let mut core = SyncCore::new(api.clone(), clock_fn, config("t", 5));
+
+    let round_id = login_to_probe(&mut core).await;
+    let events = core
+        .handle(SyncCommand::DeferFirstLogin {
+            round_id: round_id + 999,
+        })
+        .await;
+
+    assert!(
+        matches!(core.phase, Phase::AwaitPolicy { round_id: rid, .. } if rid == round_id),
+        "过期 round_id 不得改变相位"
+    );
+    assert!(!core.first_login_deferred, "过期 round_id 不得置暂缓");
+    assert!(
+        matches!(core.status(), Status::Syncing),
+        "过期 round_id 不得改变状态：{:?}",
+        core.status()
+    );
+    assert_eq!(core.last_seq(), 5);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SyncEvent::StatusChanged(Status::Idle { .. }))),
+        "过期 round_id 不得发出 Idle 状态"
+    );
+
+    // 正确 round_id 仍应生效（证明仅暂缓未误置）。
+    core.handle(SyncCommand::DeferFirstLogin { round_id }).await;
+    assert!(core.first_login_deferred);
+}
+
 // ───────────────────────── FIX 1 / 崩溃重放（driver 级） ─────────────────────────
 
 /// 构造一条可被 [`Database::apply_remote`] 解析的真实 course 实时变更。

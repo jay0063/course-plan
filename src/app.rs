@@ -742,7 +742,8 @@ impl App {
 
     /// 首登对话框动作执行（§6-3）。
     ///
-    /// `Cancel` 只关闭对话框、不发送策略；其余三种转为核心 [`FirstLoginPolicy`]。
+    /// `Cancel` 发送 [`SyncCommand::DeferFirstLogin`] 暂缓首登（不选定策略）；其余三种
+    /// 转为核心 [`FirstLoginPolicy`]。
     pub fn apply_first_login_policy(
         &mut self,
         action: FirstLoginAction,
@@ -755,7 +756,9 @@ impl App {
         let round_id = prompt.round_id;
         let policy = match action {
             FirstLoginAction::Cancel => {
-                self.sync_notice = Some("首登选择已暂缓，下次登录时再决定".to_string());
+                // 结束探针轮并暂缓首登自动同步；「立即同步」会重新探针并再次弹窗。
+                self.sync.send(SyncCommand::DeferFirstLogin { round_id });
+                self.sync_notice = Some("首登选择已暂缓，点击「立即同步」重新选择。".to_string());
                 cx.notify();
                 return;
             }

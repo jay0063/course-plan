@@ -1,8 +1,10 @@
 # CoursePlan 设计系统规范（Design Frozen）
 
-> 状态：Phase 3（lane DS / DS-2 修复）封版 **v1.2**。Phase 4 三个泳道（V1 dashboard + checkins；V2 courses + schedule + events；V3 reminders + memos + settings）必须**严格**按本文档落地。歧义即缺陷。
+> 状态：Phase 3（lane DS / DS-3 修复）封版 **v1.3**。Phase 4 三个泳道（V1 dashboard + checkins；V2 courses + schedule + events；V3 reminders + memos + settings）必须**严格**按本文档落地。歧义即缺陷。
 >
-> 基线 commit：`d7c423a` + DS-2 修复（未提交工作区）。视觉方向：**活力儿童向**——高饱和但和谐的彩笔色调、暖纸面底、大圆角、粗壮友好控件、恰到好处的微喜悦；仍保持家长日程类工具的克制与扫描速度。
+> 基线 commit：`f2f5506` + DS-3 修复（未提交工作区）。视觉方向：**活力儿童向**——高饱和但和谐的彩笔色调、暖纸面底、大圆角、粗壮友好控件、恰到好处的微喜悦；仍保持家长日程类工具的克制与扫描速度。
+>
+> **Phase 4 第一规则**：页面名、副标题与主 CTA 只属于顶栏；内容区不重复页面名、不放第二个同义主按钮（详见 §3.1.4，§4 开头引用并落到每一页）。
 
 ---
 
@@ -30,7 +32,7 @@
 
 - **短、口语、不端着。** 不超过 12 个汉字。
 - **示例**：
-  - 空态：课程管理 → "还没有课程——点右上角「新建课程」开始录入"；日程 → "本周没有额外安排"；备忘 → "记下考试范围、家长会要点、要买的文具……"
+  - 空态：课程管理 → "还没有课程——点右上角「快速添加」开始录入"；日程 → "本周没有额外安排"；备忘 → "记下考试范围、家长会要点、要买的文具……"
   - 成功：打卡 → "今日任务全部完成，做得不错！"；提醒 → "提醒已发送"；
   - 错误：保存失败 → "保存失败，请重试"；同步失败 → "同步未完成，下次启动会继续"。
 - **绝不使用**：感叹号成串（除庆祝场景最多 1 个）、「您」字（用「你」）、emoji、生硬动词（"执行"、"初始化"等）。
@@ -57,7 +59,7 @@
 | `border` | `#EADFC8` | 主分隔线/边框 |
 | `border_strong` | `#D9C8A3` | 输入边框/强分隔 |
 | `foreground` | `#2A2620` | 主文字 |
-| `muted_foreground` | `#7A6F60` | 次级文字/描述 |
+| `muted_foreground` | `#726758` | 次级文字/描述（sidebar 4.68 / surface 5.14 / panel 5.40） |
 | `muted` | `#F1E8D5` | chip/分类标签填充底 |
 | `primary` | `#F08A36` | **主橙（彩笔橙）**：主要按钮、当前页指示 |
 | `primary_hover` | `#E27A28` | hover |
@@ -65,11 +67,14 @@
 | `primary_foreground` | `#1F1612` | 主橙按钮文字（深棕 ink，7.10:1） |
 | `secondary` | `#FFF1DD` | 次级按钮底（暖米） |
 | `secondary_foreground` | `#5A4422` | 次级按钮文字 |
-| `accent` | `#3478AC` | **糖蓝（加深档）**：链接、信息徽标（白字 4.74:1） |
+| `accent` | `#3478AC` | **糖蓝（加深档）**：信息徽标、填充底（白字 4.74:1） |
 | `accent_foreground` | `#FFFFFF` | 糖蓝文字 |
+| `link` | `#2E6A99` | 正文链接（panel 5.63:1 / surface 5.36:1） |
+| `link_hover` | `#2A5F8A` | 链接 hover（panel 6.61:1） |
+| `link_active` | `#24537A` | 链接 active（panel 7.90:1） |
 | `success` | `#3D8246` | 完成（加深档，白字 4.69:1） |
 | `success_foreground` | `#FFFFFF` | success 文字 |
-| `warning` | `#8F6612` | 提醒（加深档，白字 5.15:1） |
+| `warning` | `#9A650F` | 提醒（加深档，白字 4.95:1） |
 | `warning_foreground` | `#FFFFFF` | warning 文字 |
 | `danger` | `#9C2929` | 删除/同步错误（加深档，白字 7.60:1） |
 | `danger_foreground` | `#FFFFFF` | danger 文字 |
@@ -85,9 +90,14 @@
 > HSL 是运行期派生量（`hex_color()` 反算），**不是契约**；上表的 hex 才是。
 > `selection` / `list_active` 保留 alpha：vendor `apply_config` 会对这两个字段
 > 做 α 上限（0.30 / 0.20），取上限内可直接 round-trip。
+>
+> **链接色不是 primary**：`button::link` 与正文链接一律用 `link` 家族
+> （`button::link` 的 fg 来自 `Theme::link/link_hover/link_active`）。亮色
+> `primary` 在 panel 上只有 2.4:1，不能当链接文字；`link` 从 `accent` 再加深一档，
+> 保证 panel / surface 都 ≥4.5。
 
 
-**字段映射到 `gpui_component::ThemeColor`**：`background→surface`, `foreground→foreground`, `sidebar→sidebar`, `sidebar_foreground→foreground`, `sidebar_accent→list_active`, `sidebar_accent_foreground→foreground`, `sidebar_border→border`, `primary→primary`, `primary_foreground→primary_foreground`, `secondary→secondary`, `secondary_foreground→secondary_foreground`, `muted→muted`, `muted_foreground→muted_foreground`, `accent→accent`, `accent_foreground→accent_foreground`, `danger→danger`, `danger_foreground→danger_foreground`, `success→success`, `success_foreground→success_foreground`, `warning→warning`, `warning_foreground→warning_foreground`, `info→info`, `info_foreground→info_foreground`, `border→border`, `input→border_strong`, `ring→ring`, `progress_bar→progress_bar`, `list_hover→list_hover`, `list_active→list_active`, `tab_active→surface`, `tab_active_foreground→foreground`, `selection→selection`。
+**字段映射到 `gpui_component::ThemeColor`**：`background→surface`, `foreground→foreground`, `sidebar→sidebar`, `sidebar_foreground→foreground`, `sidebar_accent→list_active`, `sidebar_accent_foreground→foreground`, `sidebar_border→border`, `primary→primary`, `primary_foreground→primary_foreground`, `secondary→secondary`, `secondary_foreground→secondary_foreground`, `muted→muted`, `muted_foreground→muted_foreground`, `accent→accent`, `accent_foreground→accent_foreground`, `link→link`, `link_hover→link_hover`, `link_active→link_active`, `danger→danger`, `danger_foreground→danger_foreground`, `success→success`, `success_foreground→success_foreground`, `warning→warning`, `warning_foreground→warning_foreground`, `info→info`, `info_foreground→info_foreground`, `border→border`, `input→border_strong`, `ring→ring`, `progress_bar→progress_bar`, `list_hover→list_hover`, `list_active→list_active`, `tab_active→surface`, `tab_active_foreground→foreground`, `selection→selection`。
 
 ### 2.2 颜色：暗色（Cozy Dark）
 
@@ -114,6 +124,9 @@
 | `secondary_foreground` | `#F2E9D6` | 次级文字 |
 | `accent` | `#7FBFEE` | **糖蓝（亮）**（深蓝字 8.43:1） |
 | `accent_foreground` | `#0F1F2E` | 深蓝底 |
+| `link` | `#7FBFEE` | 正文链接（panel 7.96:1 / surface 8.91:1） |
+| `link_hover` | `#97CBF3` | 链接 hover（panel 9.14:1） |
+| `link_active` | `#6AABE0` | 链接 active（panel 6.40:1） |
 | `success` | `#7CCE89` | 完成（深绿字 8.64:1） |
 | `success_foreground` | `#0E2410` | 深绿底 |
 | `warning` | `#FFC664` | 提醒（深棕字 8.80:1） |
@@ -130,7 +143,7 @@
 | `chart_1..5` | 见 §2.7 | 图表色阶 |
 
 
-**暗色特别说明**：按钮文字色与亮色**相反**——亮色主橙用深棕 ink（7.10:1），暗色亮糖橙底用深棕字（9.08:1）；其它饱和 fill 亮色用"加深档 + 白字"、暗色用"提亮档 + 深色字"。这是活力儿童向的视觉承诺：**不让按钮变成悬浮糖块，也不让白字落在浅黄上**。
+**暗色特别说明**：按钮文字色与亮色**相反**——亮色主橙用深棕 ink（7.10:1），暗色亮糖橙底用深棕字（9.08:1）；其它饱和 fill 亮色用"加深档 + 白字"、暗色用"提亮档 + 深色字"。这是活力儿童向的视觉承诺：**不让按钮变成悬浮糖块，也不让白字落在浅黄上**。链接在暗色直接用提亮的 `accent`（`#7FBFEE`），不需要再加深。
 
 ### 2.3 圆角
 
@@ -216,16 +229,20 @@
 
 ### 2.8 图标尺寸
 
-| Token | px | 用途 |
-|---|---|---|
-| `xs` | 12 | inline（在 chip 内、紧贴文字） |
-| `sm` | 14 | 默认（按钮内、tab、nav item） |
-| `md` | 18 | 卡片标题旁、状态徽标、stat_tile 右上角 |
-| `lg` | 22 | 空态/大型交互按钮 |
-| `xl` | 32 | 顶栏页面图标、品牌图标 |
-| — | 56 | 空态插画（Illustrated / Celebratory，直接 `Size::Size(px(56.))`） |
+| Token (`ui::tokens`) | px | vendor `Size` | 用途 |
+|---|---|---|---|
+| `ICON_XS` | 12 | `Size::XSmall` | inline（chip 内、紧贴文字、小火焰） |
+| `ICON_SM` | 14 | `Size::Small` | 默认（按钮内、tab、nav item） |
+| `ICON_MD` | 18 | `Size::Size(px(18.))` | 卡片标题旁、状态徽标、stat_tile 右上角 |
+| `ICON_LG` | 22 | `Size::Size(px(22.))` | 大号交互按钮 / 紧凑空态 |
+| `ICON_XL` | 32 | `Size::Size(px(32.))` | 空态 Compact、32px 大图标场景 |
+| — | 56 | `Size::Size(px(56.))` | 空态插画（Illustrated / Celebratory） |
 
-`Sizable` trait 的 `Size::XSmall/Small/Medium/Large` 对应 12/16/24/32 级别；非标尺寸用 `Size::Size(px(n))`（stat icon 18、空态 56、32 都是这样落的）。本系统控件内图标默认 `Small`。
+**vendor 真实映射**（gpui-component 0.7.3 `icon.rs`）：`Size::XSmall / Small / Medium / Large`
+= **12 / 14 / 16 / 24 px**（`size_3 / size_3p5 / size_4 / size_6`，rem=16）。
+**没有 18/22/32**——这三种必须显式写 `Size::Size(px(n))`（stat_tile 18、empty_state 56/32 都是这样落的）。
+`ICON_*` 是本系统的语义常量，供布局/自绘与视图层引用，不要假设它等于 vendor `Size`。
+本系统控件内图标默认 `Small`（14）。
 
 ### 2.9 阴影 / 层级
 
@@ -269,9 +286,11 @@
 - **宽度**：256px（比 Phase 2 的 216px 略宽，留足汉字+图标）。
 - **Nav item 状态**：
   - default：图标 `muted_foreground`，文字 `muted_foreground`，bg `transparent`。
-  - hover：bg `list_hover`，文字 `foreground`，过渡 `140ms`。
-  - active：bg `list_active`（透明橙），图标 + 文字 `primary`（糖橙），左侧 3px 圆角竖条 `primary`（贴在 item 左缘内 8px）。
-- **徽标**：在 `nav_item` 右侧，圆形 `rounded_full`，bg `danger`（过期提醒）或 `warning`（待打卡），文字 12px 白字。空时不渲染。
+  - hover：bg `list_hover`，过渡 `140ms`。
+  - active：bg `list_active`（透明橙），**图标 + 文字 `foreground`（深墨，11.0:1）**；
+    左侧 3px 圆角竖条 `primary`（贴在 item 左缘内 8px）。强调色由竖条 + 底色承担，
+    文字不再用 `primary`（`primary` 在 `list_active` 复合底上只有 1.83:1，不满足 AA）。
+- **徽标**：在 `nav_item` 右侧，圆形 `rounded_full`，bg `danger`（过期提醒）或 `warning`（待打卡），文字 12px 自动选暖墨/纸白（≥4.5，见 §3.6）。空时不渲染。
 - **Footer 同步指示**：一个小圆点 6px + 一行 12px 文字（"已同步 / 未登录 / …"，详细在 §3.4）。点击 → 跳到设置页。
 
 #### 3.1.2 顶栏（Topbar）
@@ -279,19 +298,23 @@
 - **Anatomy**：`title` 块（20px 加粗页面名 + 12px 灰色副标题/统计，下边自动隐藏）；右侧 `actions`：`sync_pill` + `theme_toggle` 图标按钮 + `quick_add` 主按钮。
 - **背景**：`topbar`（与 panel 同）。`border_b_1px border_color=border`。高度 56px，左右 padding 24。
 - **副标题**：根据当前页生成（如 dashboard："10月17日 周六 · 今日 2 节课 · 待打卡 2 项"；courses："已建 7 门课程 · 2 项已归档"）。由 `ui::components::page_header::page_subtitle(page, db)` 提供（**不在** `overlay.rs`）。
+- **快速添加（`quick_add`）**：顶栏唯一的 primary 按钮，执行当前页的主力创建动作——课程管理→新建课程；计划表→新增安排；日程安排→新建日程；提醒事项→新建提醒；打卡任务→新建任务；备忘笔记→新建备忘；今日概览/设置→新建课程（现有兜底）。页面内容区不得再出现同义主按钮。
 - **Motion**：页面切换时整个 content 区做 260ms 淡入（opacity 0→1 + translateY(4px → 0)），每页唯一动画 id（`page-enter:{label}`），尊重 reduce-motion（`ui::motion::page_enter_animation()`）。
-
-#### 3.1.4 标题与 CTA 归属（topbar vs page_header）
-
-- **顶栏独占**：页面名 + 副标题 + 全局动作（`sync_pill` / `theme_toggle` / `quick_add`）。任何页面都不得在内容区重复顶栏的页面名或"新增"主按钮。
-- `page_header(theme, title, subtitle, actions)` 只用于**多步骤/子视图**的英雄区（例如未来详情页），且 `title` 不得等于 `Page::label()`。
-- 当前 8 个页面的内容区用 `section_title` 分节；Phase 4 若为某页加"新增"按钮，必须放在顶栏 `quick_add`，不能另起一个同义主按钮。
 
 #### 3.1.3 Content frame
 
 - 外层 padding：`padding: 24`（桌面 ≥1280）/ `20`（1024-1279）。
 - 默认 `flex flex_col gap: 20`。
-- 顶部 `page_header`（大标题 + 描述 + 右侧操作），然后按视图自己组织。
+- 页面 body 以 `section_title` 开头，写**分节名**（如"本周安排"），不写页面名；dashboard 的问候语、settings 的卡片堆叠可直接作为首块，不强制 `section_title`。
+- **不放** `page_header`、不放页面名、不放主 CTA（见 §3.1.4）。
+
+#### 3.1.4 标题与 CTA 归属（一条规则）
+
+**顶栏独占页面名 + 副标题 + 全局动作（`sync_pill` / `theme_toggle` / `quick_add`），`quick_add` 执行当前页的主力创建动作；页面内容区只用 `section_title` 分节，不得重复页面名，也不得再放同义的主（primary）CTA。**
+
+- `page_header(theme, title, subtitle, actions)` 只保留给**多步骤/子视图**的英雄区（例如未来详情页）；`title` 不得等于 `Page::label()`，`actions` 只放次级操作。
+- 页面特有的**次级动作**（如"全部标记已读"、筛选、导出）用 `ghost` / `icon_only` 放在相关区块的 `section_title` 右侧，不抢顶栏的主 CTA。
+- Phase 4 三泳道实现任何页面时，先按本条对齐，再看 §4.x 的具体结构。
 
 ### 3.2 按钮
 
@@ -304,7 +327,7 @@ API：`ui::components::button::{primary, ghost, danger, icon_only, link}`。每�
 | `ghost` | transparent | `foreground` | — | `list_hover` | `list_active` | 36 | 12 |
 | `danger` | `danger` | `danger_foreground` | — | alpha +0.08 | alpha +0.14 | 36 | 16 |
 | `icon_only` | transparent（ghost） | gpui-kit ghost 默认 | — | `list_hover` | `list_active` | 32×32 | 0 |
-| `link` | transparent（link） | gpui-kit link 默认 | — | underline | — | 24 | 4 |
+| `link` | transparent（link） | `link`（亮 `#2E6A99` / 暗 `#7FBFEE`） | — | fg `link_hover` + underline | fg `link_active` | 24 | 4 |
 
 - **Icon-only** 默认 hover 背景 `list_hover`、active 背景 `primary.with_alpha(0.18)`，用于顶栏切换主题、关闭等。
 - 文字走 gpui-kit Medium 尺寸（约 14/600）；图标 14px。
@@ -314,8 +337,8 @@ API：`ui::components::button::{primary, ghost, danger, icon_only, link}`。每�
 ### 3.3 Nav item（侧栏导航项）
 
 API：`ui::components::nav_item::nav_item(theme, id, icon, label, active, badge: Option<(usize, Hsla)>, on_click)`。Anatomy：`[icon 14px] [label 14/600] [badge?]`。
-- 默认高度 36px，左右 padding 12px；active 左侧 3px 圆角竖条 `primary`，图标与文字均为 `primary`。
-- Badge：min 18×18 圆；`badge` 的第二项是**语义色**（过期 `danger`、待打卡 `warning`），与 active 无关；文字 11/700 自动选白/墨保证 ≥4.5:1。
+- 默认高度 36px，左右 padding 12px；active 左侧 3px 圆角竖条 `primary`，图标与文字均为 `foreground`（深墨，11.0:1；`primary` 文字在 `list_active` 上只有 1.83:1）。
+- Badge：min 18×18 圆；`badge` 的第二项是**语义色**（过期 `danger`、待打卡 `warning`），与 active 无关；文字 11/700 自动选暖墨/纸白（不足时纯黑/纯白）保证 ≥4.5:1。
 - 点击整行触发 on_click（不是图标）。
 - test-support id：`eid("nav", p.label())`（保持与 Phase 2 一致，QA 可继续使用）。
 
@@ -347,8 +370,8 @@ API：`ui::components::tab_chips(items: &[(&str, T)], selected: T, on_change)`�
 ### 3.6 Tag / Badge / Chip
 
 API：
-- `ui::components::tag::tag(theme, text, accent: Hsla)`：圆角胶囊 22px 高，padding-x 10，bg `accent.with_alpha(0.18)`，文字 12/600；文字色优先 accent，若在 tint 上 <4.5 则沿同色相加深/提亮（兜底墨/纸白）。
-- `ui::components::badge(count: usize, accent: Hsla)`：圆形 18×18，文字 11/700；文字色自动在白/墨里取对比度更高者（浅色芒果黄、深色亮橙都 ≥4.5）。
+- `ui::components::tag::tag(theme, text, accent: Hsla)`：圆角胶囊 22px 高，padding-x 10，bg `accent.with_alpha(0.18)`，文字 12/600；文字色优先 accent，若在 tint 上 <4.5 则沿同色相加深/提亮，再退暖墨/纸白，最后以纯黑/纯白兜底——保证任意 tint ≥4.5。
+- `ui::components::badge(count: usize, accent: Hsla)`：圆形 18×18，文字 11/700；文字色自动在暖墨/纸白里取对比度更高者，二者都不足时用纯黑/纯白（对任意 fill ≥4.5，含 `#777777` 这类中灰）。
 - `ui::components::chip(theme, text, accent: Hsla)`：与 tag 视觉相似但更小（20px 高）。
 - `ui::components::chip_with_filled(text, color, filled)`：旧签名兼容层（views 在用）；filled=true 实心，文字同样自适应。
 
@@ -367,7 +390,7 @@ API：`ui::components::card::card_with_theme(theme, variant, title?, subtitle?, 
 | `Hero` | `panel` | 1px `border` | `xl` (20) | **`shadow_md`** | dashboard 顶部 4 个统计卡 |
 
 - 标题 17/600 `foreground`，副标题 14/400 `muted_foreground`；内边距 16，标题区与内容间距 12。
-- **hover**：default 卡片 hover 时 `border_color: border_strong`，不变 shadow。
+- **hover**：`Default` 卡片 hover 时 `border_color: border_strong`（`ThemeColor.input`），不变 shadow；组件已实现（`card.rs` 的 `.hover`）。`Flat`（无边框）与 `Accent`（色调边框）不做 hover 边框。
 - `Hero` 用于 dashboard 4 个统计卡，有 shadow 表达"重要数据"。
 
 ### 3.8 Stat tile
@@ -391,7 +414,7 @@ API：`ui::components::list_row::list_row(theme, id, on_click?, leading?, title,
 API：`ui::components::progress::progress(theme, value: f32, accent: Hsla, height: Pixels /* 6 or 10 */)`。
 - 圆角 `rounded_full`，bg `muted` 容器，`accent` 填充；用于：checkin 进度条、staple 卡片底部条。
 
-API：`ui::components::progress::streak_badge(theme, days: usize)`：火焰图标 + "连续 N 天"，文字 12/700 `warning`（`warning` 在 panel 上 ≥5:1）。
+API：`ui::components::progress::streak_badge(theme, days: usize)`：火焰图标 + "连续 N 天"，文字 12/700 `warning`（亮色 `warning` 在 panel 上 4.83:1）。
 
 ### 3.11 Empty state
 
@@ -455,10 +478,12 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 每个页面给出：**结构**、**层级**、**关键交互**、**Phase 4 必须保留的信息密度与行为**。Phase 4 写视图时按此规范结构 + §3 组件库落地。
 
+> **统一规则（§3.1.4）**：页面名 + 副标题 + 全局动作只在顶栏，`quick_add` 执行该页主力创建动作；内容区不重复页面名、不放第二个同义主（primary）CTA，只用 `section_title` 分节，页面特有操作以次级按钮就地出现。以下各页不再重复这条。
+
 ### 4.1 今日概览（Dashboard）——V1
 
 - **结构**（自上而下）：
-  1. Greeting 区：`display` 字号 "早上好，今天也要加油！"；副标题 `body_sm` "10月17日 周六 · 今日 2 节课 · 待打卡 2 项"。
+  1. Greeting 区：`display` 字号 "早上好，今天也要加油！"（问候语，不是页面名）；副标题 `body_sm` "10月17日 周六 · 今日 2 节课 · 待打卡 2 项"。
   2. 4 个 `stat_tile` 一行：`card_hero` 圆角 20，shadow_md。
   3. 2 列网格：
      - 左：今日课程（card + 时间轴 list）
@@ -474,7 +499,7 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 4.2 课程管理（Courses）——V2
 
-- **结构**：`page_header`（标题 "课程管理" + 描述 + 右上 `+ 新建课程` primary）；`tab_chips`（全部 / 校内 / 补习）→ 内容区。
+- **结构**：顶栏显示「课程管理」+ 副标题，`quick_add` = 新建课程。内容区以 `section_title`（如"全部课程"）开头，右侧只放次级动作；下方 `tab_chips`（全部 / 校内 / 补习）→ 课程列表。**没有**页面 `page_header`，也没有第二个"新建课程"主按钮。
 - **内容**：课程卡片列表，每行：
   - 左侧 4px 圆角色条（按 `Course.color`）。
   - 中间：标题 + kind chip（"校内"或"补习"，info/warning）+ 状态 chip（已归档）；副标题：科目 + 老师 + 地点；底部：days summary + weekly 分钟数；备注（如有）。
@@ -484,32 +509,34 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 4.3 计划表（Schedule）——V2
 
-- **结构**：`page_header`（标题 + 描述 "按周重复" + 右上 `+ 新增安排` primary）。下方两栏：
-  - **左**：7 列周表头（周一/周二/…/周日）+ 卡片格；今天是 `today` 列高亮（border 1.5px primary + bg `primary.with_alpha(0.04)`）。
+- **结构**：顶栏显示「计划表」+ 副标题（如"按周重复 · 本周 12 条"），`quick_add` = 新增安排。内容区以 `section_title`（如"本周安排"）开头，右侧只放次级动作（如"今天"、筛选）；**没有**页面标题与"新增安排"主按钮。下方两栏：
+  - **左**：7 列周表头（周一/周二/…/周日）+ 卡片格；今天是 `today` 列高亮（border 1.5px primary + bg `primary.with_alpha(0.04)`）。网格最小宽度 **696** = 56（时间槽列）+ 7×88（日列）+ 6×4（列间距），容器更窄时整体水平滚动。
   - **右**（260px）：本周概况 card（4 个 `summary_row` 用 §3.6 tag 颜色块显示校内/补习/合计/条数）+ 安排清单 card（12 条 list_row，按 weekday+start 排序）。
 - **关键交互**：点击表头 → 切换以那天为中心？**否**：保持现状，点击空白格 → 新增该 weekday；点击现有块 → 编辑；hover 整列 → 列底 `+` 按钮变 `primary`，点击新增该日。
 - **保留行为**：7 列布局完整；当天列高亮；色块按课程色；右侧概况 + 安排清单；删除二次确认。
 
 ### 4.4 日程安排（Events）——V2
 
-- **结构**：`page_header`（标题 + 右上 `+ 新建日程` primary）。下方：
+- **结构**：顶栏显示「日程安排」+ 副标题，`quick_add` = 新建日程。内容区：
   - 顶部：日期选择器（左右箭头 + 当前日期 + "今天"快捷按钮）。
+  - `section_title`（如"当天安排"）。
   - 当日日程 list：每行 8px 圆点（按关联课程色或 primary）+ 时间段 + 标题 + 地点 + 完成 checkbox。
 - **关键交互**：日期切换；点击行 → 编辑；勾选完成 → 划线 + 灰色。
 - **保留行为**：日期导航；按日期筛选；已完成状态视觉；与课程关联。
 
 ### 4.5 提醒事项（Reminders）——V3
 
-- **结构**：`page_header`（标题 + 右上 `+ 新建提醒` primary）。下方：
-  - 顶部：tab_chips（待办 / 已完成，可切换 `show_done_reminders`）。
-  - 提醒列表：每行 8px 圆点（`Once` 提醒 = warning，循环提醒 = info）+ 标题 + 内容预览 + due_at + repeat label + 编辑 / 删除。
+- **结构**：顶栏显示「提醒事项」+ 副标题，`quick_add` = 新建提醒。内容区：
+  - 顶部：`tab_chips`（待办 / 已完成，可切换 `show_done_reminders`）。
+  - 提醒列表（`section_title` 如"待办提醒"）：每行 8px 圆点（`Once` 提醒 = warning，循环提醒 = info）+ 标题 + 内容预览 + due_at + repeat label + 编辑 / 删除。
   - 底部空白区可放已完成列表（当 `show_done=true`）。
 - **关键交互**：切换待办/已完成；勾选完成；编辑；删除。
 - **保留行为**：到期高亮（due 在过去但未完成 → row 左侧加 warning 边）；重复类型标签；本地通知（`start_timer` 不动）。
 
 ### 4.6 打卡任务（Check-Ins）——V1
 
-- **结构**：`page_header`（标题 + 右上 `+ 新建任务` primary）。下方：
+- **结构**：顶栏显示「打卡任务」+ 副标题，`quick_add` = 新建任务。内容区：
+  - `section_title`（如"今日打卡"）。
   - 顶部：今日完成率 progress 条（0% 文字 + 条 + N/M 数字）。
   - 3 列看板：`待打卡`（今日 active 未 done）/ `今日已完成`（今日 active done）/ `全部任务`（未归档）。每列：
     - 列头：标题 + 计数。
@@ -519,7 +546,8 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 4.7 备忘笔记（Memos）——V3
 
-- **结构**：`page_header`（标题 + 右上 `+ 新建备忘` primary）。下方：
+- **结构**：顶栏显示「备忘笔记」+ 副标题，`quick_add` = 新建备忘。内容区：
+  - `section_title`（如"全部备忘"）。
   - `tab_chips`（全部 / 已置顶）。
   - 3 列网格（`grid_cols(3)`）：每张备忘卡：左侧 4px 角色条（按 `Memo.color`）+ 标题 + 内容（多行省略）+ 更新时间 + 置顶 chip（pinned=true 时）+ 编辑/置顶/删除。
 - **关键交互**：切换 tab；点击编辑；切换置顶；删除。
@@ -527,7 +555,7 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 4.8 设置（Settings）——V3
 
-- **结构**：单列卡片堆叠（间距 16）：
+- **结构**：顶栏显示「设置」+ 副标题；本页没有创建动作（`quick_add` 走 §3.1.2 的兜底 = 新建课程）。内容区为单列卡片堆叠（间距 16），首块直接是"学生信息"卡片，无页面标题：
   1. **学生信息** card：姓名/年级/学期开始/学期结束表单。
   2. **提醒与启动** card：reminder_enabled Switch + auto_load_today Switch。
   3. **外观主题** card：浅色/深色 tab_chips。
@@ -543,27 +571,33 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 ### 5.1 对比度（WCAG AA）
 
-所有数字由 `theme::contrast_ratio`（WCAG 2.1 相对亮度）与 `ui::components::tag` 的自适应选色共同保证，测试见 `theme::tests::wcag_aa_contrast_on_filled_buttons`、`tag::tests::*`。
+所有数字由 `theme::contrast_ratio`（WCAG 2.1 相对亮度）与 `ui::components::tag` 的自适应选色共同保证，测试见 `theme::tests::wcag_aa_contrast_on_filled_buttons`、`theme::tests::wcag_aa_shell_nav_and_link_pairs`、`tag::tests::*`。
 
 | 前景 / 背景 | 亮色 | 暗色 | 阈值 |
 |---|---|---|---|
 | `foreground` on `surface` | **13.96:1** | **14.65:1** | ≥7 |
 | `foreground` on `panel` | **14.68:1** | **13.08:1** | ≥7 |
-| `muted_foreground` on `surface` | **4.57:1** | **6.40:1** | ≥4.5 |
-| `muted_foreground` on `panel` | **4.80:1** | **5.72:1** | ≥4.5 |
+| `muted_foreground` on `surface` | **5.14:1** | **6.40:1** | ≥4.5 |
+| `muted_foreground` on `panel` | **5.40:1** | **5.72:1** | ≥4.5 |
+| `muted_foreground` on `sidebar`（inactive nav） | **4.68:1** | **6.20:1** | ≥4.5 |
+| `muted_foreground` on `muted`（sync pill 离线） | **4.54:1** | **4.93:1** | ≥4.5 |
+| active nav `foreground` on `list_active`（叠 sidebar） | **11.00:1** | **12.94:1** | ≥4.5 |
+| `link` on `panel` | **5.63:1** | **7.96:1** | ≥4.5 |
+| `link` on `surface` | **5.36:1** | **8.91:1** | ≥4.5 |
+| `link_hover` / `link_active` on `panel` | 6.61 / 7.90 | 9.14 / 6.40 | ≥4.5 |
 | `primary_foreground` on `primary` | **7.10:1**（深棕 ink） | **9.08:1**（深棕） | ≥4.5 |
 | `primary_foreground` on `primary_hover` | 5.96:1 | — | ≥4.5 |
 | `primary_foreground` on `primary_active` | 4.57:1 | — | ≥4.5 |
 | `accent_foreground` on `accent` | **4.74:1**（白） | **8.43:1**（深蓝） | ≥4.5 |
 | `success_foreground` on `success` | **4.69:1**（白） | **8.64:1** | ≥4.5 |
-| `warning_foreground` on `warning` | **5.15:1**（白） | **8.80:1** | ≥4.5 |
+| `warning_foreground` on `warning` | **4.95:1**（白） | **8.80:1** | ≥4.5 |
 | `danger_foreground` on `danger` | **7.60:1**（白） | **7.36:1** | ≥4.5 |
 | `secondary_foreground` on `secondary` | **8.26:1** | **10.33:1** | ≥4.5 |
 | badge text（自动选白/墨）on `danger` | **7.60:1** | **7.69:1** | ≥4.5 |
-| badge text（自动选白/墨）on `warning` | **5.15:1** | **11.86:1** | ≥4.5 |
-| `streak_badge` warning on panel | 5.03:1 | 10.16:1 | ≥4.5 |
+| badge text（自动选白/墨）on `warning` | **4.95:1** | **11.86:1** | ≥4.5 |
+| `streak_badge` warning on panel | 4.83:1 | 10.16:1 | ≥4.5 |
 
-**策略**：亮色对饱和色使用加深档 fill + 白字；主橙保留亮色但文字用深棕 ink。暗色使用提亮 fill + 深色字。`tag` / `filled chip` / `badge` 不写死白字——按背景亮度自动在暖墨/纸白间选择，半透明 tint 先尝试 accent 本身、不足则同色相调整。历史上"浅色芒果黄 + 白字 1.9:1"的问题已由 `text_on_fill` 修复。
+**策略**：亮色对饱和色使用加深档 fill + 白字；主橙保留亮色但文字用深棕 ink。暗色使用提亮 fill + 深色字。链接单独用 `link` 家族（亮色 `#2E6A99` 系、暗色 `#7FBFEE` 系），**不用 `primary`**。`tag` / `filled chip` / `badge` 不写死白字——按背景亮度自动在暖墨/纸白间选择；半透明 tint 先尝试 accent 本身、不足则同色相调整；暖墨/纸白都不足 4.5 时（如 `#777777` 中灰，两者仅 4.20/4.41）由纯黑/纯白兜底（该兜底对任意背景 ≥4.58），整体保证 ≥4.5。历史上"浅色芒果黄 + 白字 1.9:1"的问题已由 `text_on_fill` 修复。
 
 ### 5.2 触控目标
 
@@ -609,6 +643,15 @@ pub fn toggle_mode(window: Option<&mut Window>, cx: &mut App)
 `Theme::change(mode)` 也不会回退到 gpui-component 默认色。`theme_config_colors_from` 的
 键集合 / alpha 由 `theme::tests::theme_config_keys_match_vendor_schema` 与
 `direct_theme_change_preserves_all_semantic_fields` 锁定。
+
+**已接受限制（12 个私有 base 色）**：`ThemeConfigColors` 的 12 个私有字段
+（`base.red … base.cyan.light`）无法从 crate 外赋值，所以**直接** `Theme::change(mode)`
+（不经过 `apply_for_mode`）之后，`theme.colors.red / red_light / green / green_light /
+blue / blue_light / yellow / yellow_light / magenta / magenta_light / cyan / cyan_light`
+会回退到 gpui-component 默认值。当前所有组件都读语义 token（`danger` / `success` /
+`warning` / `info` / `magenta` 等），**不读这 12 个字段**，因此视觉不受影响；
+`apply_for_mode` / `theme::init` / `toggle_mode` 仍会把它们写对。若未来组件改用
+`theme.red` 等基础色，必须在 `Theme::change` 后补一次 `apply_for_mode`。
 
 ### 6.2 `src/ui/mod.rs`
 
@@ -898,19 +941,21 @@ DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须�
 ## 8. 验证清单（Gate 3 证据）
 
 - [x] `target/visual/*.png` 8 页 × 浅/深 = 16 张 + 3 张交互 smoke（base / editor / after-close）全部刷新。
-- [x] `cargo test --workspace` 全绿：**102 个测试**（course-plan lib 58 + convergence 14 + icons 1 + render 3 + server 1 + server 集成 14 + sync-proto 11；0 failed / 0 ignored）。theme::tests 14 个，新增：
+- [x] `cargo test --workspace` 全绿：**109 个测试**（course-plan lib 65 + convergence 14 + icons 1 + render 3 + server 1 + server 集成 14 + sync-proto 11；0 failed / 0 ignored）。theme::tests 15 个，新增/关键：
   - `theme_config_keys_match_vendor_schema`（键集 + alpha）
   - `direct_theme_change_preserves_all_semantic_fields`（全部 ThemeColor + tokens + overlay.a）
-  - `wcag_aa_contrast_on_filled_buttons`
-  - `tag::tests::{badge_text_meets_aa_on_semantic_fills, badge_text_meets_aa_on_danger_and_warning, tag_text_meets_aa_on_tints, filled_chip_text_meets_aa_including_light_fills}`
+  - `wcag_aa_contrast_on_filled_buttons`（fill + 文字，亮/暗）
+  - `wcag_aa_shell_nav_and_link_pairs`（DS-3：active nav ink on `list_active`、inactive nav on `sidebar`、`link/_hover/_active` on `panel`/`surface`，亮/暗）
+  - `tag::tests::{badge_text_meets_aa_on_semantic_fills, badge_text_meets_aa_on_danger_and_warning, tag_text_meets_aa_on_tints, filled_chip_text_meets_aa_including_light_fills, text_on_fill_meets_aa_on_midtone_fills, readable_text_meets_aa_on_midtone_backgrounds}`
   - `palette::tests::palette_at_for_switches_with_theme`
   - `tests/render.rs::shell_element_ids_are_stable`（§6.8 六个稳定 id 在渲染树可查询）
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` 无 warning。
 - [x] `cargo fmt --all --check` 无 diff。
 - [x] 切换主题：顶栏 toggle 按钮点击后浅↔深色生效（dashboard-light.png vs dashboard-dark.png 明显不同），直接 `Theme::change` 也不会让 overlay 变不透明。
-- [x] Sidebar nav 点击切换：nav id 保持 Phase 2 字符串；active 文字/图标均 `primary`。
+- [x] Sidebar nav 点击切换：nav id 保持 Phase 2 字符串；active 文字/图标为 `foreground`（11.0:1 / 12.9:1），3px 竖条与 `list_active` 底色保留 `primary` 强调。
 - [x] First-login dialog：走 `overlay` + `first_login_prompt` 组件（test id `first-login:ok/cloud/local/cancel`），cancel 真正关闭。
-- [x] Schedule 7 列：日列固定 `w(88px)` + 水平滚动容器（总宽 700 ≤ 1280 下的 708）；周日照样完整可见。
+- [x] Schedule 7 列：日列固定 `w(88px)` + 网格 `min_w(696)`（56 + 7×88 + 6×4）+ 水平滚动容器；1280 下左栏 708 ≥ 696，周日完整可见。1000×640 未做无头截图（harness 固定 1280×840），按宽度算式核对：内容区 1000−256−40 = 704，左栏 704−260−16 = 428 → 网格自身水平滚动，不再裁切最右列。
+- [x] `card` `Default` 变体 hover → `border_color: border_strong`（`ThemeColor.input`）已实现，与 §3.7 一致。
 - [x] 8 个课程色互不相同（`course_palette_hues_are_distinct`，亮/暗各 ≥6 个不同 hex；实际 8 个）。
 
 ---
@@ -920,7 +965,8 @@ DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须�
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-10-17 | Phase 3 封版（lane DS 产出） |
-| v1.1 | 2026-10-17 | Gate 3 预检修复：色相统一走 `hsl_deg(度数)`（gpui `Hsla.h ∈ [0,1)`）；暗色「嫩芽」hex 校正 `#BCDC72 → #BCDB66`（与 HSL 76/0.62/0.630 一致）；`Theme::change` 不再覆盖自有调色板（安装自定义 ThemeConfig） |
+| v1.1 | 2026-10-17 | Gate 3 预检修复：色相统一走 `hsl_deg(度数)`（gpui `Hsla.h ∈ [0,1)`）；课程色板统一改为 **hex-canonical**（`hex_color()` 反算，删除手写 HSL 值；暗色「嫩芽」定为 `#BCDC72`）；`Theme::change` 不再覆盖自有调色板（安装自定义 ThemeConfig） |
 | v1.2 | 2026-10-17 | Gate 3 修复（lane DS-2）：**hex 是唯一契约**（`hex_color()` 反算，删除 HSL 列与 `hsl_deg_a`）；亮色 canvas 回暖纸 `#FBF6EC`；饱和 fill 加深 + 白字 / 暗色提亮 + 深字，§5.1 列真实对比度并由测试锁定；`tag/badge/filled chip` 自适应选字色（去掉写死白字）；`ThemeConfig` 修 `progress.bar` 键、补 `chart.1..5`、alpha 以 `#RRGGBBAA` 保留（overlay/scrollbar/drop_target/list_active_border/table_active_border），`selection`/`list_active` α 取 vendor 上限内；JSON builder 改为 `default()` + 字段赋值；`gpui-kit` 精确锁 `=0.7.3`；组件对齐 §3（按钮 36/圆角 14、list_row 透明+hover、card Hero shadow_md / Outlined 2px / 标题 17、stat_tile min_h108+value32+icon18、empty_state 56/32+Sparkle、alert_dialog 唯一 id + 真 cancel、nav active primary、badge 语义色）；app.rs 接入 `first_login_prompt` 并删除重复枚举；页面转场 260ms 唯一 id（reduce-motion 安全）；测试 id 统一（brand/theme-toggle/quick-add/sync-pill/sidebar sync indicator 可点击）；schedule 日列固定 88px 宽 + 水平滚动修周日截断；暗色课程盘经 `palette_at_for` 可达 |
+| v1.3 | 2026-10-17 | Gate 3 残余修复（lane DS-3）：**对比度**——active nav 文字/图标改 `foreground`（`list_active` 复合底上 11.00:1 / 12.94:1，保留 3px `primary` 竖条与底色）；亮色 `muted_foreground` `#7A6F60 → #726758`（sidebar 4.68 / surface 5.14 / panel 5.40；顺带把 sync pill 离线态 `muted` 上的 4.04 修到 4.54）；`button::link` 改用蓝色 `link/link_hover/link_active`（亮 `#2E6A99/#2A5F8A/#24537A`、暗 `#7FBFEE/#97CBF3/#6AABE0`，panel/surface 全 ≥4.5，不再用 `primary` 2.4:1）；`sidebar_accent_foreground` 对齐为 `foreground`；WCAG 测试新增 shell/nav/link 对；`text_on_fill`/`readable_text` 增加纯黑/纯白兜底（暖墨/纸白不足时保证 ≥4.58，修 `#777777` 中灰）；亮色 `warning` 提亮 `#8F6612 → #9A650F`（去泥；白字 4.95、panel 文字 4.83）。**文档**——§3.1.4 确立唯一规则「顶栏独占页面名 + `quick_add` 主 CTA，内容区只用 `section_title`/次级动作」并同步 §4.1–4.8（删除逐页 `page_header` + 主按钮描述）；§2.8 按 vendor 实际修正 `Size` = 12/14/16/24；§6.1 记录 12 个私有 `base.*` 色在直接 `Theme::change` 后回退 gpui 默认的已接受限制；§9 v1.1 表述修正。**组件/布局**——card `Default` 实现 hover `border_strong`；schedule 网格最小宽 `672 → 696`（56 + 7×88 + 6×4，修最右列裁切） |
 
 任何后续调整必须更新本表并同步 §6 API Freeze。

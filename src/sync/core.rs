@@ -163,6 +163,12 @@ pub enum SyncCommand {
         round_id: u64,
         policy: FirstLoginPolicy,
     },
+    /// 首登对话框「稍后决定」：结束探针轮、暂缓首登自动同步，等待手动
+    /// [`SyncCommand::SyncNow`] 重新探针。仅当 `round_id` 匹配当前
+    /// [`Phase::AwaitPolicy`] 时生效，否则忽略。
+    DeferFirstLogin {
+        round_id: u64,
+    },
 }
 
 /// 核心 → UI 事件。
@@ -334,6 +340,9 @@ pub struct SyncCore<A: SyncApi> {
     retry_at: Option<i64>,
     retry_index: usize,
     last_sync_ms: Option<i64>,
+    /// 首登「稍后决定」后为 `true`：阻塞**自动**轮次（周期 / 防抖 / 启动），
+    /// 手动 [`SyncCommand::SyncNow`] 或换账号 [`SyncCommand::Login`] 清除。
+    first_login_deferred: bool,
 }
 
 impl<A: SyncApi> SyncCore<A> {
@@ -362,6 +371,7 @@ impl<A: SyncApi> SyncCore<A> {
             retry_at: None,
             retry_index: 0,
             last_sync_ms: None,
+            first_login_deferred: false,
         }
     }
 
@@ -401,10 +411,12 @@ impl<A: SyncApi> SyncCore<A> {
                             self.device_id = format!("dev-{}-{}", (self.clock)(), auth.user.id);
                         }
                         // 登录成功 → 探针（§6）。游标在策略选定后按策略重置。
-                        // 重新登录清除旧的退避（避免沿用上一次会话的长退避）。
+                        // 重新登录清除旧的退避（避免沿用上一次会话的长退避）与
+                        // 上一账号可能遗留的首登暂缓（§3 账号切换）。
                         self.retry_at = None;
                         self.retry_index = 0;
                         self.last_server_time_ms = None;
+                        self.first_login_deferred = false;
                         events.push(SyncEvent::AuthResult {
                             ok: true,
                             message: "登录成功".to_string(),
@@ -413,14 +425,7 @@ impl<A: SyncApi> SyncCore<A> {
                             username: Some(auth.user.username),
                             token: Some(auth.token),
                         });
-                        let round_id = self.next_round_id();
-                        self.status = Status::Syncing;
-                        events.push(SyncEvent::StatusChanged(Status::Syncing));
-                        self.phase = Phase::Probe {
-                            round_id,
-                            since: 0,
-                            probe: ProbeSummary::default(),
-                        };
+                        self.start_probe(&mut events);
                     }
                     Err(err) => {
                         events.push(SyncEvent::AuthResult {
@@ -441,11 +446,24 @@ impl<A: SyncApi> SyncCore<A> {
                 self.debounce_at = None;
                 self.retry_at = None;
                 self.next_periodic_at = None;
+                self.first_login_deferred = false;
                 self.phase = Phase::Idle;
                 self.set_status(Status::LoggedOut, &mut events);
             }
             SyncCommand::SyncNow => {
-                self.trigger(true, &mut events).await;
+                // 首登暂缓中：手动同步解除暂缓并重新探针，使 UI 重新弹出对话框
+                // （协议 §6 首次登录）。
+                if self.first_login_deferred
+                    && !self.token.is_empty()
+                    && !matches!(self.status, Status::AuthFailed)
+                {
+                    self.first_login_deferred = false;
+                    self.pending = false;
+                    self.debounce_at = None;
+                    self.start_probe(&mut events);
+                } else {
+                    self.trigger(true, &mut events).await;
+                }
             }
             SyncCommand::LocalChanged => {
                 self.trigger(false, &mut events).await;
@@ -458,6 +476,9 @@ impl<A: SyncApi> SyncCore<A> {
             }
             SyncCommand::FirstLoginPolicy { round_id, policy } => {
                 self.on_policy(round_id, policy, &mut events);
+            }
+            SyncCommand::DeferFirstLogin { round_id } => {
+                self.on_defer_first_login(round_id, &mut events);
             }
         }
         self.drive(&mut events).await;
@@ -513,6 +534,17 @@ impl<A: SyncApi> SyncCore<A> {
         self.round_counter
     }
 
+    /// 开始首登探针轮次（登录成功，或暂缓后手动 SyncNow 重新探针）。
+    fn start_probe(&mut self, events: &mut Vec<SyncEvent>) {
+        let round_id = self.next_round_id();
+        self.set_status(Status::Syncing, events);
+        self.phase = Phase::Probe {
+            round_id,
+            since: 0,
+            probe: ProbeSummary::default(),
+        };
+    }
+
     async fn trigger(&mut self, immediate: bool, events: &mut Vec<SyncEvent>) {
         if self.token.is_empty() || matches!(self.status, Status::AuthFailed) {
             return;
@@ -531,6 +563,12 @@ impl<A: SyncApi> SyncCore<A> {
     }
 
     fn start_round(&mut self, mode: Mode, events: &mut Vec<SyncEvent>) {
+        if self.first_login_deferred {
+            // 首登已暂缓：自动轮次（周期 / 防抖 / 启动）只合并进 pending，不实际开轮。
+            // 手动 SyncNow 会先清除暂缓并重新探针。
+            self.pending = true;
+            return;
+        }
         if !matches!(self.phase, Phase::Idle) {
             self.pending = true;
             return;
@@ -775,6 +813,30 @@ impl<A: SyncApi> SyncCore<A> {
             }
         };
         self.start_round(mode, events);
+    }
+
+    /// 「稍后决定」：若 `round_id` 匹配当前 [`Phase::AwaitPolicy`]，结束探针轮、回到
+    /// `Idle`（**不**保留 `Syncing`），清 `pending`，并置首登暂缓；游标/水位保持不变。
+    /// 过期或未知 `round_id` 一律忽略（无状态变更）。
+    fn on_defer_first_login(&mut self, round_id: u64, events: &mut Vec<SyncEvent>) {
+        let phase = std::mem::replace(&mut self.phase, Phase::Idle);
+        match phase {
+            Phase::AwaitPolicy { round_id: rid, .. } if rid == round_id => {
+                self.first_login_deferred = true;
+                self.pending = false;
+                // 探针轮不推进游标/水位：这里只把状态从 Syncing 落回 Idle。
+                self.set_status(
+                    Status::Idle {
+                        last_sync_ms: self.last_sync_ms,
+                    },
+                    events,
+                );
+            }
+            other => {
+                // 过期 / 未知回执：恢复原状态，不改变暂缓标志。
+                self.phase = other;
+            }
+        }
     }
 
     // MARK: - 驱动循环
