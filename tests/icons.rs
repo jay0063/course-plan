@@ -43,17 +43,25 @@ fn collect_icon_tokens(source: &str, out: &mut BTreeSet<String>) {
 }
 
 /// `CalendarDays` -> `calendar-days`，与 IconName 的资产路径命名一致。
+/// 数字同样算作独立词段：`Link2` -> `link-2`、`Link2Off` -> `link-2-off`。
 fn pascal_to_snake(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
+    let mut prev: Option<char> = None;
     for (i, ch) in name.chars().enumerate() {
         if ch.is_ascii_uppercase() {
             if i != 0 {
                 out.push('-');
             }
             out.push(ch.to_ascii_lowercase());
+        } else if ch.is_ascii_digit() {
+            if prev.is_some_and(|p| p.is_ascii_alphabetic()) {
+                out.push('-');
+            }
+            out.push(ch);
         } else {
             out.push(ch);
         }
+        prev = Some(ch);
     }
     out
 }
