@@ -48,7 +48,8 @@ curl -fsS http://127.0.0.1:8080/api/health
 
 ## 4. 数据卷与持久化
 
-- 数据保存在命名卷 `courseplan-data`，挂载到容器 `/data`。
+- 数据保存在命名卷 **`courseplan-data`**（`docker-compose.yml` 用 `name:` 显式固定该名字，
+  不受 compose 项目名影响），挂载到容器 `/data`。
 - 数据库文件：`/data/courseplan.db`。SQLite 使用 **WAL 模式**（`journal_mode=WAL`），
   运行期间还存在 `courseplan.db-wal`、`courseplan.db-shm` 两个旁路文件。
 - 服务端以非 root 用户 `app`（uid 10001）运行；数据目录属主为 `app`。
@@ -59,12 +60,13 @@ curl -fsS http://127.0.0.1:8080/api/health
 docker volume inspect courseplan-data
 ```
 
-## 5. 备份规程 ⚠️
+## 5. 备份与恢复 ⚠️
 
 > **WAL 模式下绝对不要直接 `cp` / `rsync` 正在使用的 `courseplan.db`。**
 > 未 checkpoint 的已提交数据仍在 `-wal` 文件中，裸拷会得到**不一致或缺失**的副本。
+> 安全做法只有三种：① SQLite `.backup`；② `VACUUM INTO`；③ **停机后**整卷拷贝（体积快照）。
 
-三种安全方式，任选其一：
+备份文件统一命名 `courseplan-YYYY-MM-DD.db`（数据库快照）或 `courseplan-YYYY-MM-DD.tar.gz`（整卷打包）。
 
 ### 方式 A：sqlite3 `.backup`（在线热备，推荐）
 
@@ -72,41 +74,60 @@ docker volume inspect courseplan-data
 
 ```bash
 docker compose exec server \
-  sqlite3 /data/courseplan.db ".backup '/data/backup-$(date +%F).db'"
+  sqlite3 /data/courseplan.db ".backup '/data/courseplan-$(date +%F).db'"
 
 # 把快照取出到宿主机
-docker compose cp server:/data/backup-$(date +%F).db ./backup-$(date +%F).db
+docker compose cp server:/data/courseplan-$(date +%F).db ./courseplan-$(date +%F).db
 ```
 
-> 若镜像内没有 `sqlite3` CLI，可在宿主机对卷内文件执行：
-> `sqlite3 <卷路径>/courseplan.db ".backup '<目标>.db'"`。
+> 镜像已内置 `sqlite3` CLI（见 `crates/server/Dockerfile`）。若自定义镜像移除了它，
+> 可停机后在宿主机对卷内文件执行：`sqlite3 <卷路径>/courseplan.db ".backup '<目标>.db'"`。
 
 ### 方式 B：`VACUUM INTO`（SQL 一致性快照）
 
 ```bash
 docker compose exec server \
-  sqlite3 /data/courseplan.db "VACUUM INTO '/data/backup-$(date +%F).db'"
+  sqlite3 /data/courseplan.db "VACUUM INTO '/data/courseplan-$(date +%F).db'"
 ```
 
+同样用 `docker compose cp server:/data/courseplan-$(date +%F).db ./courseplan-$(date +%F).db` 取出。
+
 ### 方式 C：停机冷备（最稳妥）
+
+先停服务端，再对**已停止**的卷做整卷打包；恢复时 `-wal`/`-shm` 会被下游一起还原：
 
 ```bash
 docker compose stop server
 docker run --rm -v courseplan-data:/data -v "$PWD":/backup debian:bookworm-slim \
-  tar czf /backup/courseplan-backup-$(date +%F).tar.gz -C /data .
+  tar czf /backup/courseplan-$(date +%F).tar.gz -C /data .
 docker compose start server
 ```
 
 建议配合 cron / 定时任务定期执行，并把备份转移到异地。
 
-### 恢复
+### 恢复（务必先停服务端）
+
+**恢复前先 `docker compose stop server`**——对正在运行的库覆盖文件会损坏数据。
+然后删除旧库与其 WAL 旁路文件、写入备份、把数据目录交还 uid `10001` 属主，最后再启动：
 
 ```bash
-docker compose down
+# 1) 停服务端（绝不能在运行中覆盖 .db）
+docker compose stop server
+
+# 2) 清掉旧库 + 残留的 -wal / -shm，写入备份，修复属主
 docker run --rm -v courseplan-data:/data -v "$PWD":/backup debian:bookworm-slim \
-  sh -c "rm -f /data/courseplan.db* && cp /backup/courseplan-YYYY-MM-DD.db /data/courseplan.db && chown 10001:10001 /data/courseplan.db"
-docker compose up -d
+  sh -c "rm -f /data/courseplan.db /data/courseplan.db-wal /data/courseplan.db-shm \
+         && cp /backup/courseplan-YYYY-MM-DD.db /data/courseplan.db \
+         && chown -R 10001:10001 /data"
+
+# 3) 重新启动（迁移幂等，健康后即恢复服务）
+docker compose start server
 ```
+
+若备份是方式 C 的 `courseplan-YYYY-MM-DD.tar.gz`，把第 2 步换成解包到 `/data` 再 `chown -R 10001:10001 /data` 即可。
+
+> 恢复演练建议按人工 checklist 执行：备份 → 停服务 → 覆盖 → 启服务 → `curl /api/health`
+> 且客户端能登录拉取数据，才算验证通过。
 
 ## 6. 升级
 
@@ -147,7 +168,8 @@ docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
 ```
 
 Caddy 会自动向 Let's Encrypt 申请并续期证书，将请求反代到 `server:8080`，
-证书持久化在 `caddy-data` / `caddy-config` 卷。客户端服务器地址填 `https://<域名>`。
+证书持久化在 `courseplan-caddy-data` / `courseplan-caddy-config` 卷（`docker-compose.tls.yml`
+已用 `name:` 显式固定）。客户端服务器地址填 `https://<域名>`。
 
 ### 备选：使用 nginx 反向代理
 
@@ -227,7 +249,7 @@ docker compose down            # 停止并移除容器与网络，保留数据�
 docker image rm courseplan-server:dev
 ```
 
-> **数据卷 `courseplan-data`（及 TLS 的 `caddy-data` / `caddy-config`）会被保留**，
+> **数据卷 `courseplan-data`（及 TLS 的 `courseplan-caddy-data` / `courseplan-caddy-config`）会被保留**，
 > 便于重装后继续使用。若要连同数据一起彻底删除：
 
 ```bash

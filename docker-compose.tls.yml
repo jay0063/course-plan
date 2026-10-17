@@ -24,4 +24,6 @@ services:
 
 volumes:
   caddy-data:
+    name: courseplan-caddy-data
   caddy-config:
+    name: courseplan-caddy-config

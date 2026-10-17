@@ -134,8 +134,13 @@ docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
 | 平台 | 路径 |
 | --- | --- |
 | Linux | `~/.local/share/courseplan/course-plan/` |
-| macOS | `~/Library/Application Support/com.courseplan.course-plan/` |
-| Windows | `%APPDATA%\courseplan\course-plan\` |
+| macOS | `~/Library/Application Support/com.courseplan.CoursePlan/course-plan/` |
+| Windows | `%APPDATA%\courseplan\CoursePlan\data\course-plan\` |
+
+> 路径由 `directories` crate 的 `ProjectDirs::from("com", "courseplan", "CoursePlan")` 推导：
+> Linux 取 `$XDG_DATA_HOME`（默认 `~/.local/share`）+ 小写应用名 `courseplan`；macOS 取
+> `~/Library/Application Support/<bundle id>`；Windows 取漫游 AppData + `courseplan\CoursePlan\data`。
+> 应用再统一追加 `course-plan` 子目录（`store.rs::data_dir()`），即上表末段。
 
 > **覆盖数据目录**：设置非空的 `COURSEPLAN_DATA_DIR` 环境变量即可直接指定数据目录
 > （便于开发、测试与数据隔离），例如 `COURSEPLAN_DATA_DIR=/tmp/cp cargo run`。

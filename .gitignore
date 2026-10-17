@@ -2,5 +2,10 @@
 /dist
 .slim/deepwork/
 
+# 本地环境变量（可能含 JWT_SECRET 等机密）；模板 .env.example 继续入库
+.env
+.env.*
+!.env.example
+
 # TLS 叠加：真实 Caddyfile 由用户从 deploy/Caddyfile.example 复制生成
 deploy/Caddyfile

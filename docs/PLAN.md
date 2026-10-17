@@ -1,6 +1,7 @@
 # CoursePlan 重构 + 同步后端 — 实施计划
 
-> 状态: Phase 1 完成、Gate 1 修复中（协议 v1.2）· 日期: 2026-10-17 · 基线 commit: `7700204`
+> 状态: **已交付**（历史计划存档 / plan of record，不再施工）。Phase 0–5 全部完成，最终 commit `4b5a550`（128 测试通过）。产品概览与使用方式见 [`README.md`](../README.md)，设计规范见 `docs/DESIGN.md`，同步协议真源见 `docs/SYNC-PROTOCOL.md`。
+> 日期: 2026-10-17 · 基线起点 commit: `7700204`
 > 变更记录: 协议 v1.1→v1.2 折入 Gate 0 复评 R1-R3；Gate 1 修复项（分页游标规格化、live-null-payload 拒绝、since 解析、BEGIN IMMEDIATE 事务守卫、镜像 sqlite3、容器绑定地址参数、CI 触发路径）。
 
 ## 1. 目标
