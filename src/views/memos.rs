@@ -1,7 +1,15 @@
+//! 备忘笔记（DESIGN §4.7）。
+//!
+//! Phase 4 V3：`tab_chips`（全部 / 已置顶）、3 列卡片网格（左侧 4px 色条 +
+//! 标题 + 多行省略正文 + 更新时间 + 置顶 chip + 置顶/编辑/删除动作）；
+//! 编辑器走 `overlay` + `dialog`（§3.12）。
+//!
+//! 页面名、副标题与 `quick_add` 主按钮归顶栏（§3.1.4）——内容区只有 `section_title`。
+
 use crate::prelude::*;
 use gpui::assets::IconName;
 use gpui::component::WindowExt;
-use gpui::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui::component::button::ButtonVariant;
 use gpui::component::input::{Input, InputState};
 use gpui::component::input::{Textarea, TextareaState};
 use gpui::component::scroll::ScrollableElement;
@@ -11,9 +19,17 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::model::{Database, Memo};
-use crate::ui::widgets::{
-    PALETTE, action_button, close_editor, eid, empty_state, palette_at, panel, section_title,
+use crate::ui::components::button as btn;
+use crate::ui::components::empty_state::{EmptyVariant, empty_state};
+use crate::ui::components::overlay::{dialog, overlay, section_title};
+use crate::ui::components::tab_chips::tab_chips;
+use crate::ui::components::tag::chip;
+use crate::ui::form::field_row;
+use crate::ui::palette::palette_at_for;
+use crate::ui::tokens::{
+    INPUT_H, RADIUS_LG, RADIUS_MD, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
+use crate::ui::widgets::{close_editor, eid, panel};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MemoFilter {
@@ -111,8 +127,9 @@ impl Render for MemoEditor {
         let this_close = this.clone();
         let content = self.content.clone();
 
-        let mut swatches = div().flex().gap_2().flex_wrap();
-        for i in 0..PALETTE.len() {
+        // 8 色课程盘选色（§2.6：Phase 4 必须走 `palette_at_for`）。
+        let mut swatches = div().flex().gap(SPACE_SM).flex_wrap();
+        for i in 0..8usize {
             let active = i == self.color;
             let this = this.clone();
             swatches = swatches.child(
@@ -120,7 +137,7 @@ impl Render for MemoEditor {
                     .id(eid("memo-color", &i.to_string()))
                     .size(px(24.))
                     .rounded_full()
-                    .bg(palette_at(i))
+                    .bg(palette_at_for(i, &theme))
                     .border_2()
                     .border_color(if active {
                         theme.foreground
@@ -140,64 +157,51 @@ impl Render for MemoEditor {
             );
         }
 
-        div()
-            .w(px(480.))
-            .p_5()
-            .rounded_lg()
+        let body = div()
+            .id(eid("memo-editor", "body"))
+            .test_support()
             .flex()
             .flex_col()
-            .gap_3()
-            .bg(panel(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_lg()
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .text_color(theme.foreground)
-                    .child("编辑备忘"),
-            )
-            .child(Input::new(&title).h(px(32.)).w_full())
+            .gap(SPACE_LG)
+            .child(Input::new(&title).h(INPUT_H).w_full())
             .child(
                 div()
                     .w_full()
-                    .min_h(px(200.))
-                    .rounded_md()
+                    .min_h(px(160.))
+                    .rounded(RADIUS_MD)
                     .border_1()
                     .border_color(theme.border)
                     .child(Textarea::new(&content).w_full()),
             )
-            .child(swatches)
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_1()
-                    .child(
-                        Button::new("memo-cancel")
-                            .secondary()
-                            .compact()
-                            .label("取消")
-                            .on_click(move |_e, _w, app| {
-                                close_editor(this_close.read(app).owner.clone(), app);
-                            }),
-                    )
-                    .child(
-                        Button::new("memo-save")
-                            .primary()
-                            .compact()
-                            .label("保存")
-                            .on_click(move |_e, window, app| {
-                                let (draft, cb) = {
-                                    let guard = this.read(app);
-                                    (guard.snapshot(app), guard.on_save.clone())
-                                };
-                                cb(draft, window, app);
-                            }),
-                    ),
-            )
+            .child(field_row("颜色", swatches));
+
+        let footer = div()
+            .flex()
+            .gap(SPACE_SM)
+            .child(btn::secondary(
+                "memo-cancel",
+                "取消",
+                move |_e, _w, app| {
+                    close_editor(this_close.read(app).owner.clone(), app);
+                },
+            ))
+            .child(btn::primary(
+                "memo-save",
+                "保存",
+                move |_e, window, app| {
+                    let (draft, cb) = {
+                        let guard = this.read(app);
+                        (guard.snapshot(app), guard.on_save.clone())
+                    };
+                    cb(draft, window, app);
+                },
+            ));
+
+        // 注意：`overlay` 必须直接挂在页面根节点下（它是 `absolute inset_0` 的
+        // 全屏遮罩——外层再包一个 div 会让它相对那个 0 高度的容器定位）。
+        // 末尾 `.into_any_element()`：`overlay`/`dialog` 的 `impl IntoElement`
+        // 在 Rust 2024 下会捕获 `&theme` 的生命周期，必须在此擦除（'static）后返回。
+        overlay(&theme, dialog(&theme, "编辑备忘", body, Some(footer))).into_any_element()
     }
 }
 
@@ -223,18 +227,20 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let pending = app.pending_memo.clone();
     let filter = app.memo_filter;
 
-    let this_add = this.clone();
-    let action: AnyElement = Button::new("add-memo")
-        .primary()
-        .compact()
-        .icon(Icon::new(IconName::Plus))
-        .label("新建备忘")
-        .on_click(move |_e, window, cx| {
-            this_add.update(cx, |this, cx| {
-                this.open_memo_editor(MemoDraft::empty(), window, cx);
+    // 全部 / 已置顶（§3.5 tab_chips）。
+    let this_tab = this.clone();
+    let tabs = tab_chips(
+        &theme,
+        "memo-tab",
+        &[("全部", MemoFilter::All), ("已置顶", MemoFilter::Pinned)],
+        filter,
+        move |value, _w, cx| {
+            this_tab.update(cx, |this, cx| {
+                this.memo_filter = value;
+                cx.notify();
             });
-        })
-        .into_any_element();
+        },
+    );
 
     let mut memos: Vec<Memo> = app.db.live_memos().cloned().collect();
     match filter {
@@ -247,238 +253,197 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
             .then_with(|| b.updated_at.cmp(&a.updated_at))
     });
 
-    let mut grid = div().grid().grid_cols(3).gap_3();
-    if memos.is_empty() {
-        return div()
+    let section = match filter {
+        MemoFilter::All => "全部备忘",
+        MemoFilter::Pinned => "已置顶备忘",
+    };
+    let header_trailing = div()
+        .flex()
+        .items_center()
+        .gap(SPACE_LG)
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(theme.muted_foreground)
+                .child(format!("共 {} 条", app.db.live_memo_count())),
+        )
+        .child(tabs)
+        .into_any_element();
+
+    let body: AnyElement = if memos.is_empty() {
+        div()
             .flex_1()
             .min_h_0()
+            .flex()
+            .items_center()
+            .justify_center()
             .child(empty_state(
                 &theme,
+                EmptyVariant::Illustrated,
                 IconName::NotebookPen,
-                "还没有备忘",
-                Some("记下考试范围、家长会要点、需要买的文具…"),
+                if filter == MemoFilter::Pinned {
+                    "还没有置顶的备忘"
+                } else {
+                    "还没有备忘"
+                },
+                Some(if filter == MemoFilter::Pinned {
+                    "点备忘卡片上的「置顶」，重要的事就排在最前面"
+                } else {
+                    "记下考试范围、家长会要点、需要买的文具…"
+                }),
+                None::<Div>,
             ))
-            .when_some(pending, |d, e| {
-                d.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(Hsla {
-                            a: 0.45,
-                            ..theme.foreground
-                        })
-                        .child(e),
-                )
-            });
-    }
-    for m in &memos {
-        let _color = palette_at(m.color);
-        let id = m.id.clone();
-        let id_a = m.id.clone();
-        let id_b = m.id.clone();
-        let this_edit = this.clone();
-        let this_pin = this.clone();
-        let this_del = this.clone();
-        let title = m.title.clone();
-        let content = m.content.clone();
-        let updated = m.updated_at.clone();
-        let pinned = m.pinned;
-
-        grid = grid.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .border_1()
-                .border_color(theme.border)
-                .border_l_2()
-                .bg(panel(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_sm()
-                                .font_semibold()
-                                .text_color(theme.foreground)
-                                .child(if title.is_empty() {
-                                    "（无标题）".to_string()
-                                } else {
-                                    title.clone()
-                                }),
-                        )
-                        .when(pinned, |d| {
-                            d.child(
-                                div()
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .py(px(1.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(theme.warning)
-                                    .text_xs()
-                                    .text_color(theme.warning)
-                                    .child("置顶"),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h(px(60.))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(content.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(updated.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap_1()
-                                .child(action_button(
-                                    eid("memo-pin", &m.id),
-                                    if pinned { "取消置顶" } else { "置顶" },
-                                    move |_e, window, cx| {
-                                        this_pin.update(cx, |this, cx| {
-                                            let found =
-                                                this.db.live_memos().find(|x| x.id == id).cloned();
-                                            if let Some(mut item) = found {
-                                                item.pinned = !item.pinned;
-                                                this.db.save_memo(item);
-                                            }
-                                            this.commit(window, cx);
-                                        });
-                                    },
-                                ))
-                                .child(action_button(
-                                    eid("memo-edit", &m.id),
-                                    "编辑",
-                                    move |_e, window, cx| {
-                                        this_edit.update(cx, |this, cx| {
-                                            let found = this
-                                                .db
-                                                .live_memos()
-                                                .find(|x| x.id == id_a)
-                                                .cloned();
-                                            if let Some(item) = found {
-                                                let draft = MemoDraft::from(&item);
-                                                this.open_memo_editor(draft, window, cx);
-                                            }
-                                        });
-                                    },
-                                ))
-                                .child(action_button(
-                                    eid("memo-del", &m.id),
-                                    "删除",
-                                    move |_e, window, cx| {
-                                        confirm_delete_memo(
-                                            this_del.clone(),
-                                            window,
-                                            cx,
-                                            id_b.clone(),
-                                        );
-                                    },
-                                )),
-                        ),
-                ),
-        );
-    }
-
-    let grid = div().flex_1().min_h_0().overflow_y_scrollbar().child(grid);
-
-    let mut tabs = div().flex().gap_2();
-    for (label, f) in [("全部", MemoFilter::All), ("置顶", MemoFilter::Pinned)] {
-        let active = filter == f;
-        let this = this.clone();
-        tabs = tabs.child(
-            div()
-                .id(eid("memo-filter", label))
-                .px_3()
-                .py(px(4.))
-                .rounded_full()
-                .text_xs()
-                .cursor_pointer()
-                .border_1()
-                .border_color(if active { theme.primary } else { theme.border })
-                .bg(if active {
-                    theme.primary.with_alpha(0.12)
-                } else {
-                    Hsla {
-                        a: 0.0,
-                        ..theme.foreground
-                    }
-                })
-                .text_color(if active {
-                    theme.primary
-                } else {
-                    theme.muted_foreground
-                })
-                .on_click(move |_e, _w, cx| {
-                    this.update(cx, |this, cx| {
-                        this.memo_filter = f;
-                        cx.notify();
-                    });
-                })
-                .child(label),
-        );
-    }
+            .into_any_element()
+    } else {
+        let mut grid = div().grid().grid_cols(3).gap(SPACE_LG);
+        for m in &memos {
+            grid = grid.child(memo_card(&theme, this.clone(), m));
+        }
+        div()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
+            .child(grid)
+            .into_any_element()
+    };
 
     div()
         .flex()
         .flex_col()
         .size_full()
         .p_5()
-        .gap_4()
-        .child(section_title(&theme, "备忘笔记", Some(action)))
+        .gap(SPACE_XL)
+        .child(section_title(&theme, section, Some(header_trailing)))
+        .child(body)
+        .when_some(pending, |d, e| d.child(e))
+}
+
+/// 备忘卡片：左侧 4px 色条（`palette_at_for`）+ 标题 + 正文（3 行省略）+
+/// 更新时间 + 置顶 chip + 置顶 / 编辑 / 删除动作。
+fn memo_card(theme: &Theme, this: Entity<App>, m: &Memo) -> impl IntoElement {
+    let accent = palette_at_for(m.color, theme);
+
+    let id_pin = m.id.clone();
+    let id_edit = m.id.clone();
+    let id_del = m.id.clone();
+    let this_pin = this.clone();
+    let this_edit = this.clone();
+    let this_del = this.clone();
+    let pinned = m.pinned;
+
+    let header = div()
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(SPACE_SM)
         .child(
             div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(15.))
+                .font_weight(FontWeight(600.0))
+                .text_color(theme.foreground)
+                .line_clamp(2)
+                .child(if m.title.is_empty() {
+                    "（无标题）".to_string()
+                } else {
+                    m.title.clone()
+                }),
+        )
+        .when(pinned, |d| d.child(chip(theme, "置顶", theme.warning)));
+
+    let content = if m.content.trim().is_empty() {
+        String::new()
+    } else {
+        m.content.clone()
+    };
+
+    let actions = div()
+        .flex()
+        .items_center()
+        .gap(SPACE_XS)
+        .child(btn::icon_only(
+            eid("memo-pin", &m.id),
+            IconName::Pin,
+            if pinned { "取消置顶" } else { "置顶" },
+            move |_e, window, cx| {
+                this_pin.update(cx, |this, cx| {
+                    let found = this.db.live_memos().find(|x| x.id == id_pin).cloned();
+                    if let Some(mut item) = found {
+                        item.pinned = !item.pinned;
+                        this.db.save_memo(item);
+                    }
+                    this.commit(window, cx);
+                });
+            },
+        ))
+        .child(btn::icon_only(
+            eid("memo-edit", &m.id),
+            IconName::Pencil,
+            "编辑",
+            move |_e, window, cx| {
+                this_edit.update(cx, |this, cx| {
+                    let found = this.db.live_memos().find(|x| x.id == id_edit).cloned();
+                    if let Some(item) = found {
+                        let draft = MemoDraft::from(&item);
+                        this.open_memo_editor(draft, window, cx);
+                    }
+                });
+            },
+        ))
+        .child(btn::icon_only(
+            eid("memo-del", &m.id),
+            IconName::Trash,
+            "删除",
+            move |_e, window, cx| {
+                confirm_delete_memo(this_del.clone(), window, cx, id_del.clone());
+            },
+        ));
+
+    div()
+        .id(eid("memo-card", &m.id))
+        .flex()
+        .overflow_hidden()
+        .rounded(RADIUS_LG)
+        .border_1()
+        .border_color(theme.border)
+        .bg(panel(theme))
+        .hover(|s| s.border_color(theme.input))
+        .test_support()
+        .child(div().w(px(4.)).flex_shrink_0().bg(accent))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
                 .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(tabs)
+                .flex_col()
+                .gap(SPACE_MD)
+                .p(SPACE_LG)
+                .child(header)
                 .child(
                     div()
-                        .text_sm()
+                        .flex_1()
+                        .min_h(px(56.))
+                        .text_size(px(12.))
                         .text_color(theme.muted_foreground)
-                        .child(format!("共 {} 条", app.db.live_memo_count())),
+                        .line_clamp(3)
+                        .child(content),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(SPACE_SM)
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(m.updated_at.clone()),
+                        )
+                        .child(actions),
                 ),
         )
-        .child(grid)
-        .when_some(pending, |d, e| {
-            d.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(Hsla {
-                        a: 0.45,
-                        ..theme.foreground
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .child(e),
-            )
-        })
 }
 
 /// 删除确认对话框。

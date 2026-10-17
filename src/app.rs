@@ -117,6 +117,12 @@ pub struct App {
     pub sync_password: Option<Entity<InputState>>,
     /// 同步提示文案（登录结果 / 错误）。
     pub sync_notice: Option<String>,
+    /// 首登「稍后决定」提示是否仍待展示。
+    ///
+    /// Cancel 后核心会立刻发一轮 `StatusChanged(Idle)`，而 `Idle` 分支默认清空
+    /// `sync_notice`，会把暂缓提示抹掉。该标志令提示存活至用户下一次操作
+    /// （手动「立即同步」→ `Syncing` / 登录 / 登出）。
+    pub sync_defer_hint: bool,
     /// 首登对话框（双方皆非空时展示）。
     pub first_login_prompt: Option<FirstLoginPrompt>,
     /// 最近一次登录是否发生了账号切换（同账号重登时不弹首登三选一，§6）。
@@ -189,6 +195,7 @@ impl App {
             sync_username: None,
             sync_password: None,
             sync_notice: None,
+            sync_defer_hint: false,
             first_login_prompt: None,
             pending_login_switched: false,
             _timer: None,
@@ -500,11 +507,7 @@ impl App {
     ) {
         match event {
             SyncEvent::StatusChanged(status) => {
-                // 一轮成功回到 Idle：清掉旧提示，避免陈旧告警长期滞留。
-                if matches!(status, Status::Idle { .. }) {
-                    self.sync_notice = None;
-                }
-                self.sync_status = status;
+                self.on_sync_status(status);
             }
             SyncEvent::RoundStarted { .. } => {
                 // 轮次起点：重置本轮最小本地改动戳记账（§5.3 R3）。
@@ -593,6 +596,26 @@ impl App {
         cx.notify();
     }
 
+    /// 状态迁移：维护提示文案的生命周期（不触发渲染，由 `on_sync_event` 统一 `notify`）。
+    ///
+    /// - `Syncing`：新一轮（含暂缓后手动「立即同步」触发的重新探针）开始，首登暂缓提示
+    ///   失效并清空；因首登暂缓期间自动轮次被核心挡在 `pending`，此处只会在真正
+    ///   重新探针时命中。
+    /// - `Idle`：一轮成功收尾，清掉旧提示；但首登暂缓提示需保留至用户操作。
+    fn on_sync_status(&mut self, status: Status) {
+        match &status {
+            Status::Syncing if self.sync_defer_hint => {
+                self.sync_defer_hint = false;
+                self.sync_notice = None;
+            }
+            Status::Idle { .. } if !self.sync_defer_hint => {
+                self.sync_notice = None;
+            }
+            _ => {}
+        }
+        self.sync_status = status;
+    }
+
     /// 探针结果：服务端空 → 全量推；本地空 → 全量拉；双方非空 → 弹三选一对话框。
     ///
     /// 同账号重登（`pending_login_switched == false`）不弹对话框：游标已被重置为 0，
@@ -634,6 +657,8 @@ impl App {
         window: gpui::AnyWindowHandle,
         cx: &mut Context<Self>,
     ) {
+        // 任何登录尝试（成功或失败）都取代旧的首登暂缓提示。
+        self.sync_defer_hint = false;
         if !ok {
             self.sync_notice = Some(message.clone());
             let _ = window.update(cx, |_, window, cx| {
@@ -754,11 +779,15 @@ impl App {
             return;
         };
         let round_id = prompt.round_id;
+        // 选定任意策略即视为已做出决定，撤销可能残留的暂缓提示。
+        self.sync_defer_hint = false;
         let policy = match action {
             FirstLoginAction::Cancel => {
                 // 结束探针轮并暂缓首登自动同步；「立即同步」会重新探针并再次弹窗。
                 self.sync.send(SyncCommand::DeferFirstLogin { round_id });
                 self.sync_notice = Some("首登选择已暂缓，点击「立即同步」重新选择。".to_string());
+                // 紧接的 `StatusChanged(Idle)` 不得清空上述提示。
+                self.sync_defer_hint = true;
                 cx.notify();
                 return;
             }
@@ -791,6 +820,7 @@ impl App {
         let mut settings = store::load_sync();
         settings.token.clear();
         let _ = store::save_sync(&mut settings);
+        self.sync_defer_hint = false;
         self.sync_notice = Some("已登出（本地数据保留）".to_string());
         cx.notify();
     }
@@ -1152,4 +1182,44 @@ fn render_topbar(app: &App, _skin: &Skin, cx: &mut Context<App>) -> AnyElement {
                 )),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headless_app() -> App {
+        App::with_database(Database::default())
+    }
+
+    /// Cancel → `StatusChanged(Idle)` → 提示仍可见 → `SyncNow`（`Syncing`）→ 提示清除。
+    #[::core::prelude::v1::test]
+    fn defer_hint_survives_idle_then_clears_on_syncing() {
+        let mut app = headless_app();
+        // 模拟「稍后决定」：写入暂缓提示并置标志。
+        app.sync_notice = Some("首登选择已暂缓，点击「立即同步」重新选择。".to_string());
+        app.sync_defer_hint = true;
+
+        // 核心紧随 Cancel 发来的一轮 Idle 不得抹掉提示。
+        app.on_sync_status(Status::Idle { last_sync_ms: None });
+        assert!(app.sync_defer_hint);
+        assert_eq!(
+            app.sync_notice.as_deref(),
+            Some("首登选择已暂缓，点击「立即同步」重新选择。")
+        );
+
+        // 手动「立即同步」→ 核心重新探针 → `Syncing`：提示清除。
+        app.on_sync_status(Status::Syncing);
+        assert!(!app.sync_defer_hint);
+        assert!(app.sync_notice.is_none());
+    }
+
+    /// 普通提示（如登录结果）仍按原逻辑在回到 Idle 时清空。
+    #[::core::prelude::v1::test]
+    fn idle_still_clears_normal_notice() {
+        let mut app = headless_app();
+        app.sync_notice = Some("已登录：alice".to_string());
+        app.on_sync_status(Status::Idle { last_sync_ms: None });
+        assert!(app.sync_notice.is_none());
+    }
 }

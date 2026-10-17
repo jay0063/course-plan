@@ -1,9 +1,19 @@
+//! 设置（DESIGN §4.8）。
+//!
+//! Phase 4 V3：单列卡片堆叠——学生信息（输入 + `DatePicker` 学期日期）、
+//! 提醒与启动（两个 Switch）、外观主题（`tab_chips` 浅色 / 深色）、同步
+//! （**仅样式**，行为与代码路径原样保留）、数据存储（`kv_row` 计数 + 数据目录
+//! 链接 + 载入示例 / 清空全部，二次确认）。
+//!
+//! 页面名与副标题归顶栏（§3.1.4）——内容区首块直接是「学生信息」卡片。
+
 use crate::prelude::*;
+use chrono::NaiveDate;
 use gpui::assets::IconName;
-use gpui::component::Size;
 use gpui::component::ThemeMode;
 use gpui::component::WindowExt;
-use gpui::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui::component::button::{Button, ButtonVariant};
+use gpui::component::date_picker::{DatePicker, DatePickerState, DateTime};
 use gpui::component::input::{Input, InputState};
 use gpui::component::notification::Notification;
 use gpui::component::scroll::ScrollableElement;
@@ -13,8 +23,13 @@ use gpui::*;
 use crate::app::App;
 use crate::model::Profile;
 use crate::sync::{Status, SyncCommand};
+use crate::ui::components::button as btn;
+use crate::ui::components::card::{CardVariant, card_with_theme};
+use crate::ui::components::kv_row::kv_row;
+use crate::ui::components::tab_chips::tab_chips;
 use crate::ui::form::field_row;
-use crate::ui::widgets::{card, eid, kv_row, panel, section_title};
+use crate::ui::tokens::{INPUT_H, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
+use crate::ui::widgets::eid;
 
 /// 学生资料编辑区。作为独立视图，方便读取输入值并写回 App。
 pub struct ProfileInputs {
@@ -22,8 +37,8 @@ pub struct ProfileInputs {
     name: Entity<InputState>,
     grade: Entity<InputState>,
     school: Entity<InputState>,
-    term_start: Entity<InputState>,
-    term_end: Entity<InputState>,
+    term_start: Entity<DatePickerState>,
+    term_end: Entity<DatePickerState>,
 }
 
 impl ProfileInputs {
@@ -36,8 +51,18 @@ impl ProfileInputs {
         let n = profile.student.clone();
         let g = profile.grade.clone();
         let s = profile.school.clone();
-        let ts = profile.term_start.clone();
-        let te = profile.term_end.clone();
+        let ts = parse_ymd(&profile.term_start);
+        let te = parse_ymd(&profile.term_end);
+
+        let term_start = cx.new(|cx| DatePickerState::new(window, cx).date_format("%Y-%m-%d"));
+        let term_end = cx.new(|cx| DatePickerState::new(window, cx).date_format("%Y-%m-%d"));
+        if let Some(date) = ts {
+            term_start.update(cx, |state, cx| state.set_date(date, window, cx));
+        }
+        if let Some(date) = te {
+            term_end.update(cx, |state, cx| state.set_date(date, window, cx));
+        }
+
         cx.new(|cx| Self {
             app,
             name: cx.new(|cx| {
@@ -55,16 +80,8 @@ impl ProfileInputs {
                     .placeholder("就读学校")
                     .default_value(s)
             }),
-            term_start: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("2026-09-01")
-                    .default_value(ts)
-            }),
-            term_end: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("2027-01-20")
-                    .default_value(te)
-            }),
+            term_start,
+            term_end,
         })
     }
 
@@ -74,8 +91,8 @@ impl ProfileInputs {
             student: self.name.read(cx).value().to_string(),
             grade: self.grade.read(cx).value().to_string(),
             school: self.school.read(cx).value().to_string(),
-            term_start: self.term_start.read(cx).value().to_string(),
-            term_end: self.term_end.read(cx).value().to_string(),
+            term_start: ymd_or(self.term_start.read(cx).date_time(), &current.term_start),
+            term_end: ymd_or(self.term_end.read(cx).date_time(), &current.term_end),
             reminder_enabled: current.reminder_enabled,
             auto_load_today: current.auto_load_today,
             sync_ts: current.sync_ts,
@@ -96,21 +113,21 @@ impl Render for ProfileInputs {
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(field_row("姓名", Input::new(&name).h(px(32.)).w_full()))
-            .child(field_row("年级", Input::new(&grade).h(px(32.)).w_full()))
-            .child(field_row("学校", Input::new(&school).h(px(32.)).w_full()))
+            .gap(SPACE_MD)
+            .child(field_row("姓名", Input::new(&name).h(INPUT_H).w_full()))
+            .child(field_row("年级", Input::new(&grade).h(INPUT_H).w_full()))
+            .child(field_row("学校", Input::new(&school).h(INPUT_H).w_full()))
             .child(
                 div()
                     .flex()
-                    .gap_2()
-                    .child(div().flex_1().child(field_row(
+                    .gap(SPACE_MD)
+                    .child(div().flex_1().min_w_0().child(field_row(
                         "学期开始",
-                        Input::new(&term_start).h(px(32.)).w_full(),
+                        DatePicker::new(&term_start).placeholder("选择日期"),
                     )))
-                    .child(div().flex_1().child(field_row(
+                    .child(div().flex_1().min_w_0().child(field_row(
                         "学期结束",
-                        Input::new(&term_end).h(px(32.)).w_full(),
+                        DatePicker::new(&term_end).placeholder("选择日期"),
                     ))),
             )
             .child(
@@ -118,29 +135,28 @@ impl Render for ProfileInputs {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_2()
+                    .gap(SPACE_SM)
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(12.))
                             .text_color(theme.muted_foreground)
-                            .child("日期格式 2026-09-01"),
+                            .child("日期点选即可；改完点右侧保存。"),
                     )
-                    .child(
-                        Button::new("save-profile")
-                            .secondary()
-                            .compact()
-                            .label("保存资料")
-                            .on_click(move |_e, window, app| {
-                                let (values, owner) = {
-                                    let guard = this.read(app);
-                                    (guard.snapshot(app), guard.app.clone())
-                                };
-                                owner.update(app, |root, cx| {
-                                    root.db.save_profile(values);
-                                    root.commit(window, cx);
-                                });
-                            }),
-                    ),
+                    .child(btn::secondary_with_icon(
+                        "save-profile",
+                        "保存资料",
+                        IconName::Save,
+                        move |_e, window, app| {
+                            let (values, owner) = {
+                                let guard = this.read(app);
+                                (guard.snapshot(app), guard.app.clone())
+                            };
+                            owner.update(app, |root, cx| {
+                                root.db.save_profile(values);
+                                root.commit(window, cx);
+                            });
+                        },
+                    )),
             )
     }
 }
@@ -189,68 +205,171 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
             });
         });
 
-    let mut theme_row = div().flex().gap_2();
-    for (label, icon, mode, active) in [
-        ("浅色", IconName::Sun, ThemeMode::Light, !dark),
-        ("深色", IconName::Moon, ThemeMode::Dark, dark),
-    ] {
-        theme_row = theme_row.child(
-            div()
-                .id(eid("theme-mode", label))
-                .px_4()
-                .py(px(6.))
-                .rounded_md()
-                .text_sm()
-                .cursor_pointer()
-                .border_1()
-                .border_color(if active { theme.primary } else { theme.border })
-                .bg(if active {
-                    theme.primary.with_alpha(0.12)
-                } else {
-                    panel(&theme)
-                })
-                .text_color(if active {
-                    theme.primary
-                } else {
-                    theme.foreground
-                })
-                .on_click(move |_e, window, cx| {
-                    Theme::change(mode, Some(window), cx);
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(Icon::new(icon).with_size(Size::XSmall))
-                        .child(label),
-                ),
-        );
-    }
+    // 外观主题（§4.8-3）：浅色 / 深色 tab_chips，点击即时切换（不落盘）。
+    let theme_tabs = tab_chips(
+        &theme,
+        "theme-mode",
+        &[("浅色", ThemeMode::Light), ("深色", ThemeMode::Dark)],
+        if dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        },
+        move |mode, window, cx| {
+            Theme::change(mode, Some(window), cx);
+        },
+    );
 
     let this_clear = this.clone();
-    let clear_button = Button::new("clear-data")
-        .danger()
-        .compact()
-        .icon(Icon::new(IconName::Trash))
-        .label("清空全部数据")
-        .on_click(move |_e, window, cx| {
+    let clear_button = btn::danger_with_icon(
+        "clear-data",
+        "清空全部数据",
+        IconName::Trash,
+        move |_e, window, cx| {
             confirm_clear_all(this_clear.clone(), window, cx);
-        });
+        },
+    );
 
     let this_sample = this.clone();
-    let sample_button = Button::new("load-sample")
-        .secondary()
-        .compact()
-        .icon(Icon::new(IconName::Plus))
-        .label("载入示例数据")
-        .on_click(move |_e, window, cx| {
+    let sample_button = btn::secondary_with_icon(
+        "load-sample",
+        "载入示例数据",
+        IconName::Plus,
+        move |_e, window, cx| {
             confirm_load_sample(this_sample.clone(), window, cx);
-        });
+        },
+    );
+
+    let sync_card = render_sync_card(app, window, cx);
 
     let data_path = crate::store::data_file().display().to_string();
+    let data_card = card_with_theme(
+        &theme,
+        CardVariant::Default,
+        Some("数据存储"),
+        Some("数据保存在本地，不联网"),
+        div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_SM)
+            .child(kv_row(&theme, "数据文件", data_path))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .child(
+                        div()
+                            .id(eid("data-action", "open-dir"))
+                            .flex_shrink_0()
+                            .test_support()
+                            .child(btn::link(
+                                "open-data-dir",
+                                "打开数据目录",
+                                |_e, _w, cx| {
+                                    cx.reveal_path(&crate::store::data_dir());
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme.muted_foreground)
+                            .child("在文件管理器里打开"),
+                    ),
+            )
+            .child(kv_row(
+                &theme,
+                "课程",
+                format!("{} 门", app.db.live_course_count()),
+            ))
+            .child(kv_row(
+                &theme,
+                "课表条目",
+                format!("{} 条", app.db.live_session_count()),
+            ))
+            .child(kv_row(
+                &theme,
+                "日程安排",
+                format!("{} 条", app.db.live_event_count()),
+            ))
+            .child(kv_row(
+                &theme,
+                "提醒事项",
+                format!("{} 条", app.db.live_reminder_count()),
+            ))
+            .child(kv_row(
+                &theme,
+                "打卡任务",
+                format!("{} 个", app.db.live_checkin_count()),
+            ))
+            .child(kv_row(
+                &theme,
+                "备忘笔记",
+                format!("{} 条", app.db.live_memo_count()),
+            ))
+            .child(div().h(SPACE_XS))
+            .child(
+                div()
+                    .flex()
+                    .gap(SPACE_SM)
+                    .flex_wrap()
+                    .child(sample_button)
+                    .child(clear_button),
+            ),
+    );
 
-    // ── 同步卡片（普通功能实现，无样式打磨）──
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .p_5()
+        .gap(SPACE_LG)
+        .overflow_y_scrollbar()
+        .child(card_with_theme(
+            &theme,
+            CardVariant::Default,
+            Some("学生信息"),
+            Some("用于首页问候与统计"),
+            profile,
+        ))
+        .child(card_with_theme(
+            &theme,
+            CardVariant::Default,
+            Some("提醒与启动"),
+            None::<SharedString>,
+            div()
+                .flex()
+                .flex_col()
+                .gap(SPACE_LG)
+                .child(reminder_switch)
+                .child(auto_switch),
+        ))
+        .child(card_with_theme(
+            &theme,
+            CardVariant::Default,
+            Some("外观主题"),
+            Some("切换后立即生效"),
+            div().flex().child(theme_tabs),
+        ))
+        .child(sync_card)
+        .child(data_card)
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(theme.muted_foreground)
+                .child("小学课程管理计划 · 基于 GPUI Kit 构建"),
+        )
+}
+
+/// 同步卡片（§4.8-4）。
+///
+/// **Phase 4 V3 仅改样式**：输入框、四个按钮（登录 / 注册 / 登出 / 立即同步）、
+/// 状态行与 Phase 3 的行为、代码路径完全一致；同步 worker 与通知逻辑不在本页。
+fn render_sync_card(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> AnyElement {
+    let theme = cx.theme().clone();
+    let this = cx.entity();
+
     let server_url = match &app.sync_server_url {
         Some(entity) => entity.clone(),
         None => {
@@ -282,11 +401,11 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
         let url = server_url.clone();
         let user = username.clone();
         let pass = password.clone();
-        Button::new("sync-login")
-            .primary()
-            .compact()
-            .label("登录")
-            .on_click(move |_e, _window, cx| {
+        btn::primary_with_icon(
+            "sync-login",
+            "登录",
+            IconName::LogIn,
+            move |_e, _window, cx| {
                 let (url, user, pass) = (
                     url.read(cx).value().to_string(),
                     user.read(cx).value().to_string(),
@@ -300,18 +419,19 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
                         register: false,
                     });
                 });
-            })
+            },
+        )
     };
     let register = {
         let this = this.clone();
         let url = server_url.clone();
         let user = username.clone();
         let pass = password.clone();
-        Button::new("sync-register")
-            .secondary()
-            .compact()
-            .label("注册")
-            .on_click(move |_e, _window, cx| {
+        btn::secondary_with_icon(
+            "sync-register",
+            "注册",
+            IconName::UserRound,
+            move |_e, _window, cx| {
                 let (url, user, pass) = (
                     url.read(cx).value().to_string(),
                     user.read(cx).value().to_string(),
@@ -325,143 +445,79 @@ pub fn render(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl
                         register: true,
                     });
                 });
-            })
+            },
+        )
     };
     let logout = {
         let this = this.clone();
-        Button::new("sync-logout")
-            .secondary()
-            .compact()
-            .label("登出")
-            .on_click(move |_e, _window, cx| {
+        btn::secondary_with_icon(
+            "sync-logout",
+            "登出",
+            IconName::LogOut,
+            move |_e, _window, cx| {
                 this.update(cx, |this, cx| this.sync_logout(cx));
-            })
+            },
+        )
     };
     let sync_now = {
         let this = this.clone();
-        Button::new("sync-now")
-            .secondary()
-            .compact()
-            .label("立即同步")
-            .on_click(move |_e, _window, cx| {
+        btn::secondary_with_icon(
+            "sync-now",
+            "立即同步",
+            IconName::RefreshCw,
+            move |_e, _window, cx| {
                 this.update(cx, |this, _cx| this.sync.send(SyncCommand::SyncNow));
-            })
+            },
+        )
     };
 
     let status_text = sync_status_text(&app.sync_status, app.sync_notice.as_deref());
-    let sync_card = card(
-        &theme,
-        "同步",
-        Some("多设备同步（可选，离线也能用）"),
+
+    // QA/视觉证据锚点（§6.8 风格）：外层薄壳让按钮可被 `window.click(id)` 命中。
+    let action = |key: &str, button: Button| {
         div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(field_row(
-                "服务器地址",
-                Input::new(&server_url).h(px(32.)).w_full(),
-            ))
-            .child(field_row(
-                "用户名",
-                Input::new(&username).h(px(32.)).w_full(),
-            ))
-            .child(field_row("密码", Input::new(&password).h(px(32.)).w_full()))
-            .child(kv_row(&theme, "状态", status_text))
-            .child(div().h(px(4.)))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(login)
-                    .child(register)
-                    .child(logout)
-                    .child(sync_now),
-            ),
-    );
+            .id(eid("sync-action", key))
+            .flex_shrink_0()
+            .test_support()
+            .child(button)
+    };
 
     div()
+        .id("sync-card")
         .flex()
         .flex_col()
-        .size_full()
-        .p_5()
-        .gap_4()
-        .overflow_y_scrollbar()
-        .child(section_title(&theme, "设置", None))
-        .child(card(
+        .test_support()
+        .child(card_with_theme(
             &theme,
-            "学生信息",
-            Some("用于首页问候与统计"),
-            profile,
-        ))
-        .child(card(
-            &theme,
-            "提醒与启动",
-            None::<SharedString>,
+            CardVariant::Default,
+            Some("同步"),
+            Some("多设备同步（可选，离线也能用）"),
             div()
                 .flex()
                 .flex_col()
-                .gap_3()
-                .child(reminder_switch)
-                .child(auto_switch),
-        ))
-        .child(card(&theme, "外观主题", None::<SharedString>, theme_row))
-        .child(sync_card)
-        .child(card(
-            &theme,
-            "数据存储",
-            Some("数据保存在本地，不联网"),
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(kv_row(&theme, "数据文件", data_path))
-                .child(kv_row(
-                    &theme,
-                    "课程",
-                    format!("{} 门", app.db.live_course_count()),
+                .gap(SPACE_MD)
+                .child(field_row(
+                    "服务器地址",
+                    Input::new(&server_url).h(INPUT_H).w_full(),
                 ))
-                .child(kv_row(
-                    &theme,
-                    "课表条目",
-                    format!("{} 条", app.db.live_session_count()),
+                .child(field_row(
+                    "用户名",
+                    Input::new(&username).h(INPUT_H).w_full(),
                 ))
-                .child(kv_row(
-                    &theme,
-                    "日程安排",
-                    format!("{} 条", app.db.live_event_count()),
-                ))
-                .child(kv_row(
-                    &theme,
-                    "提醒事项",
-                    format!("{} 条", app.db.live_reminder_count()),
-                ))
-                .child(kv_row(
-                    &theme,
-                    "打卡任务",
-                    format!("{} 个", app.db.live_checkin_count()),
-                ))
-                .child(kv_row(
-                    &theme,
-                    "备忘笔记",
-                    format!("{} 条", app.db.live_memo_count()),
-                ))
-                .child(div().h(px(4.)))
+                .child(field_row("密码", Input::new(&password).h(INPUT_H).w_full()))
+                .child(kv_row(&theme, "状态", status_text))
                 .child(
                     div()
                         .flex()
-                        .gap_2()
+                        .gap(SPACE_SM)
                         .flex_wrap()
-                        .child(sample_button)
-                        .child(clear_button),
+                        .child(action("login", login))
+                        .child(action("register", register))
+                        .child(action("logout", logout))
+                        .child(action("sync-now", sync_now)),
                 ),
         ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child("小学课程管理计划 · 基于 GPUI Kit 构建"),
-        )
+        .into_any_element()
 }
 
 /// 清空数据确认对话框。
@@ -522,4 +578,17 @@ fn sync_status_text(status: &Status, notice: Option<&str>) -> String {
         Some(note) if !note.is_empty() => format!("{base} · {note}"),
         _ => base,
     }
+}
+
+/// "2026-09-01" → `NaiveDate`（无法解析时 `None`，此时日期控件保持空态）。
+fn parse_ymd(text: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok()
+}
+
+/// 日期控件值 → "YYYY-MM-DD"。未选择日期时回落到原值（不清空既有资料）。
+fn ymd_or(value: DateTime, fallback: &str) -> String {
+    value
+        .format("%Y-%m-%d")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| fallback.to_string())
 }

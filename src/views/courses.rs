@@ -1,7 +1,10 @@
+//! 课程管理（DESIGN.md §4.2）。
+//!
+//! 页面名 + 顶部主 CTA 归顶栏（§3.1.4）；本页内容区只有 `section_title` 分节、
+//! `tab_chips` 过滤与课程卡片列表。
+
 use crate::prelude::*;
 use gpui::assets::IconName;
-use gpui::component::WindowExt;
-use gpui::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui::component::input::{Input, InputState};
 use gpui::component::input::{Textarea, TextareaState};
 use gpui::component::scroll::ScrollableElement;
@@ -9,13 +12,171 @@ use gpui::*;
 
 use std::rc::Rc;
 
-use crate::app::App;
+use crate::app::{App, Page};
 use crate::model::{Course, CourseKind, Database, WEEKDAY_LABELS};
+use crate::ui::components::button;
+use crate::ui::components::card::{CardVariant, card_with_theme};
+use crate::ui::components::empty_state::{EmptyVariant, empty_state};
+use crate::ui::components::overlay::{AlertVariant, alert_dialog, dialog, overlay, section_title};
+use crate::ui::components::tab_chips::tab_chips;
+use crate::ui::components::tag::{chip, tag};
 use crate::ui::form::field_row;
+use crate::ui::palette::palette_at_for;
 use crate::ui::select::{Select, SelectOption};
-use crate::ui::widgets::{
-    PALETTE, action_button, chip, close_editor, eid, empty_state, palette_at, panel, section_title,
+use crate::ui::tokens::text;
+use crate::ui::tokens::{
+    INPUT_H, RADIUS_FULL, RADIUS_MD, SPACE_2XL, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
+use crate::ui::widgets::{close_editor, eid};
+
+// MARK: - 删除确认挂起态（courses / schedule / events 三页共用）
+
+/// 删除对象类别。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeleteKind {
+    Course,
+    Session,
+    Event,
+}
+
+impl DeleteKind {
+    fn slug(self) -> &'static str {
+        match self {
+            DeleteKind::Course => "course",
+            DeleteKind::Session => "session",
+            DeleteKind::Event => "event",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            DeleteKind::Course => "删除课程",
+            DeleteKind::Session => "删除安排",
+            DeleteKind::Event => "删除日程",
+        }
+    }
+
+    fn description(self, name: &str) -> SharedString {
+        match self {
+            DeleteKind::Course => {
+                format!("确定删除「{name}」吗？相关课表安排也会一并移除。").into()
+            }
+            DeleteKind::Session => "确定从课表中删除这条安排吗？".into(),
+            DeleteKind::Event => "确定删除这条日程吗？".into(),
+        }
+    }
+
+    fn remove(self, db: &mut Database, id: &str) {
+        match self {
+            DeleteKind::Course => db.delete_course(id),
+            DeleteKind::Session => db.delete_session(id),
+            DeleteKind::Event => db.delete_event(id),
+        }
+    }
+}
+
+/// 一条待确认的删除。
+#[derive(Clone)]
+pub(crate) struct DeleteRequest {
+    pub page: Page,
+    pub kind: DeleteKind,
+    pub id: String,
+    pub name: String,
+}
+
+/// 视图层的删除确认挂起态。
+///
+/// 设计系统要求删除必须经 `ui::components::overlay::alert_dialog` 二次确认，且按钮
+/// id 必须唯一（§3.12：`{prefix}:ok` / `{prefix}:cancel`）。三个页面都是无状态渲染
+/// 函数，`App`（本泳道不可改）也没有承载它的槽位，因此用 GPUI Global 承载这一份极小
+/// 的状态。任一页面渲染时若发现挂起态属于别的页面就丢弃，避免「离开页面后确认框
+/// 阴魂不散」。
+pub(crate) struct PendingDelete(pub(crate) Option<DeleteRequest>);
+
+impl Global for PendingDelete {}
+
+/// 渲染前丢弃不属于当前页面的挂起确认。
+pub(crate) fn discard_stale_delete(cx: &mut Context<App>, page: Page) {
+    let stale = cx
+        .try_global::<PendingDelete>()
+        .and_then(|p| p.0.as_ref())
+        .is_some_and(|req| req.page != page);
+    if stale {
+        cx.set_global(PendingDelete(None));
+    }
+}
+
+/// 当前挂起的删除确认（若有）。
+pub(crate) fn pending_delete(cx: &Context<App>) -> Option<DeleteRequest> {
+    cx.try_global::<PendingDelete>().and_then(|p| p.0.clone())
+}
+
+/// 打开一条删除确认。
+pub(crate) fn request_delete(
+    cx: &mut Context<App>,
+    page: Page,
+    kind: DeleteKind,
+    id: String,
+    name: String,
+) {
+    cx.set_global(PendingDelete(Some(DeleteRequest {
+        page,
+        kind,
+        id,
+        name,
+    })));
+    cx.notify();
+}
+
+/// 遮罩点击拦截层。
+///
+/// `ui::components::overlay` 的 backdrop 没有 `occlude()`，GPUI 的 hit-test 会把
+/// 遮罩**下面**的页面元素一起收进 mouse listener 列表（点击穿透：点对话框按钮会
+/// 顺带触发底下的课程行 / 安排卡片）。在遮罩之前铺一层全屏透明 `occlude` 层，
+/// hit-test 走到它即停止，下层页面不再收到鼠标事件。
+pub(crate) fn overlay_click_guard() -> AnyElement {
+    div().absolute().inset_0().occlude().into_any_element()
+}
+
+/// 删除确认对话框（`overlay` + `alert_dialog`：全屏遮罩 + 唯一按钮 id）。
+pub(crate) fn delete_confirm_overlay(
+    theme: &Theme,
+    req: &DeleteRequest,
+    app: Entity<App>,
+) -> AnyElement {
+    let prefix = format!("delete-{}:{}", req.kind.slug(), req.id);
+    let ok_app = app.clone();
+    let kind = req.kind;
+    let ok_id = req.id.clone();
+    let on_ok = move |_e: &ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+        cx.set_global(PendingDelete(None));
+        ok_app.update(cx, |this, cx| {
+            kind.remove(&mut this.db, &ok_id);
+            this.commit(window, cx);
+        });
+    };
+    let on_cancel = move |_e: &ClickEvent, _w: &mut Window, cx: &mut gpui::App| {
+        cx.set_global(PendingDelete(None));
+        app.update(cx, |_this, cx| cx.notify());
+    };
+    overlay(
+        theme,
+        alert_dialog(
+            theme,
+            &prefix,
+            req.kind.title(),
+            req.kind.description(&req.name),
+            "删除",
+            "取消",
+            AlertVariant::Danger,
+            on_ok,
+            on_cancel,
+        ),
+    )
+    .into_any_element()
+}
+
+// MARK: - 过滤器 / 草稿
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CourseFilter {
@@ -67,7 +228,7 @@ impl CourseDraft {
 
 type SaveCb = Rc<dyn Fn(CourseDraft, &mut Window, &mut gpui::App)>;
 
-/// 课程编辑面板。作为独立视图渲染，由 App 以遮罩方式承载。
+/// 课程编辑器。作为 `overlay` + `dialog` 内容渲染，由 App 以遮罩方式承载。
 pub struct CourseEditor {
     owner: Entity<App>,
     id: String,
@@ -170,111 +331,89 @@ impl Render for CourseEditor {
             "编辑课程"
         };
 
-        let save_entity = this.clone();
-        let this_close = this.clone();
-
-        div()
-            .w(px(520.))
-            .max_h(px(680.))
-            .overflow_y_scrollbar()
-            .p_5()
-            .rounded_lg()
+        let body = div()
+            .w_full()
             .flex()
             .flex_col()
-            .gap_3()
-            .bg(panel(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_lg()
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .text_color(theme.foreground)
-                    .child(title),
-            )
-            .child(field_row("课程名称", Input::new(&name).h(px(32.)).w_full()))
+            .gap(SPACE_MD)
+            .child(field_row("课程名称", Input::new(&name).h(INPUT_H).w_full()))
             .child(kind)
-            .child(field_row("科目", Input::new(&subject).h(px(32.)).w_full()))
+            .child(field_row("科目", Input::new(&subject).h(INPUT_H).w_full()))
             .child(field_row(
                 "老师/机构",
-                Input::new(&teacher).h(px(32.)).w_full(),
+                Input::new(&teacher).h(INPUT_H).w_full(),
             ))
             .child(field_row(
                 "上课地点",
-                Input::new(&location).h(px(32.)).w_full(),
+                Input::new(&location).h(INPUT_H).w_full(),
             ))
             .child(
                 div()
                     .w_full()
-                    .rounded_md()
+                    .rounded(RADIUS_MD)
                     .border_1()
                     .border_color(theme.border)
                     .child(Textarea::new(&note).w_full()),
             )
             .child(
                 div()
-                    .text_xs()
-                    .font_medium()
+                    .text_size(text::LABEL_SM)
+                    .font_weight(FontWeight(600.0))
                     .text_color(theme.muted_foreground)
                     .child("标识颜色"),
             )
-            .child(color_row(&theme, self.color, this.clone()))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        Button::new("course-cancel")
-                            .secondary()
-                            .compact()
-                            .label("取消")
-                            .on_click(move |_e, _window, app| {
-                                close_editor(this_close.read(app).owner.clone(), app);
-                            }),
-                    )
-                    .child(
-                        Button::new("course-save")
-                            .primary()
-                            .compact()
-                            .label("保存")
-                            .on_click(move |_e, window, app| {
-                                let (draft, cb) = {
-                                    let guard = save_entity.read(app);
-                                    (guard.snapshot(app), guard.on_save.clone())
-                                };
-                                cb(draft, window, app);
-                            }),
-                    ),
-            )
+            .child(color_row(&theme, self.color, this.clone()));
+
+        let cancel_this = this.clone();
+        let save_this = this.clone();
+        let footer = div()
+            .flex()
+            .gap(SPACE_SM)
+            .child(button::secondary(
+                "course-cancel",
+                "取消",
+                move |_e, _w, cx| {
+                    close_editor(cancel_this.read(cx).owner.clone(), cx);
+                },
+            ))
+            .child(button::primary(
+                "course-save",
+                "保存",
+                move |_e, window, cx| {
+                    let (draft, cb) = {
+                        let guard = save_this.read(cx);
+                        (guard.snapshot(cx), guard.on_save.clone())
+                    };
+                    cb(draft, window, cx);
+                },
+            ));
+
+        dialog(&theme, title, body, Some(footer)).into_any_element()
     }
 }
 
+/// 8 色课程色板（§2.6）：必须经 `palette_at_for(index, &Theme)` 取色。
 fn color_row(theme: &Theme, selected: usize, this: Entity<CourseEditor>) -> impl IntoElement {
-    let mut row = div().flex().gap_2().flex_wrap();
-    for i in 0..PALETTE.len() {
+    let mut row = div().flex().gap(SPACE_SM).flex_wrap();
+    for i in 0..8usize {
         let active = i == selected;
-        let this = this.clone();
+        let swatch_this = this.clone();
         row = row.child(
             div()
                 .id(eid("course-color", &i.to_string()))
-                .size(px(26.))
-                .rounded_full()
-                .bg(palette_at(i))
+                .size(px(26.)) // 一次性像素：色块直径（§1.2 例外 ②）
+                .flex_shrink_0()
+                .rounded(RADIUS_FULL)
+                .bg(palette_at_for(i, theme))
                 .border_2()
                 .border_color(if active {
                     theme.foreground
                 } else {
-                    Hsla {
-                        a: 0.0,
-                        ..theme.foreground
-                    }
+                    theme.foreground.with_alpha(0.0)
                 })
                 .cursor_pointer()
                 .on_click(move |_e, _w, cx| {
-                    this.update(cx, |this, cx| {
+                    swatch_this.update(cx, |this, cx| {
                         this.color = i;
                         cx.notify();
                     });
@@ -290,6 +429,9 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     let filter = app.course_filter;
     let pending = app.pending_course.clone();
 
+    discard_stale_delete(cx, Page::Courses);
+    let deleting = pending_delete(cx);
+
     let mut courses: Vec<Course> = app.db.live_courses().cloned().collect();
     match filter {
         CourseFilter::All => {}
@@ -298,18 +440,20 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
     }
     courses.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut list = div().flex().flex_col().gap_2();
+    let mut list = div().flex().flex_col().gap(SPACE_MD);
     if courses.is_empty() {
         list = list.child(empty_state(
             &theme,
+            EmptyVariant::Illustrated,
             IconName::BookOpen,
             "还没有课程",
-            Some("点击右上角“新建课程”开始录入"),
+            Some("点右上角「快速添加」开始录入"),
+            None::<AnyElement>,
         ));
     }
 
     for course in &courses {
-        let color = palette_at(course.color);
+        let color = palette_at_for(course.color, &theme);
         let kind_color = match course.kind {
             CourseKind::School => theme.info,
             CourseKind::Tutoring => theme.warning,
@@ -331,229 +475,185 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                 .join("、")
         };
 
-        let id = course.id.clone();
-        let id_b = course.id.clone();
+        let id_row = course.id.clone();
+        let id_edit = course.id.clone();
+        let id_del = course.id.clone();
+        let name_title = course.name.clone();
+        let name_del = course.name.clone();
+        let this_row = this.clone();
         let this_edit = this.clone();
         let this_del = this.clone();
-        let name = course.name.clone();
-        let teacher = course.teacher.clone();
-        let location = course.location.clone();
-        let note = course.note.clone();
-        let subject = course.subject.clone();
         let active = course.active;
 
+        // 科目 / 老师 / 地点：拼成一行密集信息。
+        let mut meta_parts: Vec<String> = Vec::new();
+        if !course.subject.is_empty() {
+            meta_parts.push(course.subject.clone());
+        }
+        if !course.teacher.is_empty() {
+            meta_parts.push(course.teacher.clone());
+        }
+        if !course.location.is_empty() {
+            meta_parts.push(format!("@ {}", course.location));
+        }
+        let meta_line = meta_parts.join(" · ");
+        let note = course.note.clone();
+
         let detail = div()
+            .id(eid("course-row", &course.id))
             .flex_1()
             .min_w_0()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(SPACE_XS)
+            .cursor_pointer()
+            .on_click(move |_e, window, cx| {
+                this_row.update(cx, |this, cx| {
+                    if let Some(c) = this.db.course(&id_row).cloned() {
+                        this.open_course_editor(CourseDraft::from(&c), window, cx);
+                    }
+                });
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(SPACE_SM)
                     .child(
                         div()
-                            .text_sm()
-                            .font_semibold()
+                            .text_size(text::BODY_EMPH)
+                            .font_weight(FontWeight(600.0))
                             .text_color(if active {
                                 theme.foreground
                             } else {
                                 theme.muted_foreground
                             })
-                            .child(name.clone()),
+                            .child(name_title),
                     )
-                    .child(chip(course.kind.label(), kind_color, false))
+                    .child(tag(&theme, course.kind.short(), kind_color))
                     .when(!active, |d| {
-                        d.child(chip("已归档", theme.muted_foreground, false))
+                        d.child(chip(&theme, "已归档", theme.muted_foreground))
                     }),
             )
+            .when(!meta_line.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.muted_foreground)
+                        .child(meta_line),
+                )
+            })
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .flex_wrap()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .when(!subject.is_empty(), |d| d.child(format!("科目 {subject}")))
-                    .when(!teacher.is_empty(), |d| d.child(teacher.clone()))
-                    .when(!location.is_empty(), |d| d.child(format!("@ {location}"))),
-            )
-            .child(
-                div()
-                    .text_xs()
+                    .text_size(text::CAPTION)
                     .text_color(theme.muted_foreground)
                     .child(format!("{schedule_text} · 每周 {weekly} 分钟")),
             )
             .when(!note.is_empty(), |d| {
                 d.child(
                     div()
-                        .text_xs()
+                        .text_size(text::CAPTION)
                         .text_color(theme.muted_foreground)
                         .child(note.clone()),
                 )
             });
 
-        list = list.child(
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap(SPACE_XS)
+            .flex_shrink_0()
+            .child(button::icon_only(
+                eid("course-edit", &course.id),
+                IconName::Pencil,
+                "编辑课程",
+                move |_e, window, cx| {
+                    this_edit.update(cx, |this, cx| {
+                        if let Some(c) = this.db.course(&id_edit).cloned() {
+                            this.open_course_editor(CourseDraft::from(&c), window, cx);
+                        }
+                    });
+                },
+            ))
+            .child(button::icon_only(
+                eid("course-del", &course.id),
+                IconName::Trash,
+                "删除课程",
+                move |_e, _window, cx| {
+                    this_del.update(cx, |_this, cx| {
+                        request_delete(
+                            cx,
+                            Page::Courses,
+                            DeleteKind::Course,
+                            id_del.clone(),
+                            name_del.clone(),
+                        );
+                    });
+                },
+            ));
+
+        list = list.child(card_with_theme(
+            &theme,
+            CardVariant::Default,
+            None::<SharedString>,
+            None::<SharedString>,
             div()
                 .flex()
                 .items_start()
-                .gap_3()
-                .p_3()
-                .rounded_md()
-                .border_1()
-                .border_color(theme.border)
-                .bg(panel(&theme))
+                .gap(SPACE_MD)
                 .child(
                     div()
-                        .w(px(4.))
+                        .w(px(4.)) // 一次性像素：4px 色条（§1.2 例外 ②）
                         .h(px(44.))
                         .flex_shrink_0()
-                        .rounded_full()
+                        .rounded(RADIUS_FULL)
                         .bg(color),
                 )
                 .child(detail)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .flex_shrink_0()
-                        .child(action_button(
-                            eid("course-edit", &course.id),
-                            "编辑",
-                            move |_e, window, cx| {
-                                this_edit.update(cx, |this, cx| {
-                                    if let Some(c) = this.db.course(&id).cloned() {
-                                        this.open_course_editor(CourseDraft::from(&c), window, cx);
-                                    }
-                                });
-                            },
-                        ))
-                        .child(action_button(
-                            eid("course-del", &course.id),
-                            "删除",
-                            move |_e, window, cx| {
-                                let owner = this_del.clone();
-                                confirm_delete_course(owner, window, cx, id_b.clone());
-                            },
-                        )),
-                ),
-        );
+                .child(actions),
+        ));
     }
 
-    let this_add = this.clone();
-    let header_action: AnyElement = Button::new("add-course")
-        .primary()
-        .compact()
-        .icon(Icon::new(IconName::Plus))
-        .label("新建课程")
-        .on_click(move |_e, window, cx| {
-            this_add.update(cx, |this, cx| {
-                let draft = CourseDraft {
-                    id: String::new(),
-                    name: String::new(),
-                    kind: CourseKind::School,
-                    subject: String::new(),
-                    teacher: String::new(),
-                    location: String::new(),
-                    note: String::new(),
-                    color: 0,
-                };
-                this.open_course_editor(draft, window, cx);
+    let filter_this = this.clone();
+    let filters = tab_chips(
+        &theme,
+        "course-filter",
+        &[
+            ("全部", CourseFilter::All),
+            ("校内", CourseFilter::School),
+            ("补习", CourseFilter::Tutoring),
+        ],
+        filter,
+        move |value, _w, cx| {
+            filter_this.update(cx, |this, cx| {
+                this.course_filter = value;
+                cx.notify();
             });
-        })
+        },
+    );
+
+    let count: AnyElement = div()
+        .text_size(text::LABEL_SM)
+        .text_color(theme.muted_foreground)
+        .child(format!("{} 门", courses.len()))
         .into_any_element();
 
-    let mut filter_bar = div().flex().items_center().gap_2();
-    for (label, f) in [
-        ("全部", CourseFilter::All),
-        ("学校课程", CourseFilter::School),
-        ("补习课程", CourseFilter::Tutoring),
-    ] {
-        filter_bar = filter_bar.child(filter_chip(&theme, label, filter == f, this.clone(), f));
-    }
+    let overlay_open = pending.is_some() || deleting.is_some();
 
     div()
         .flex()
         .flex_col()
         .size_full()
-        .p_5()
-        .gap_4()
-        .child(section_title(&theme, "课程管理", Some(header_action)))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(filter_bar)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("共 {} 门", courses.len())),
-                ),
-        )
+        .p(SPACE_2XL)
+        .gap(SPACE_XL)
+        .child(section_title(&theme, "全部课程", Some(count)))
+        .child(filters)
         .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(list))
-        .when_some(pending, |d, e| {
-            d.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(Hsla {
-                        a: 0.45,
-                        ..theme.foreground
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .child(e),
-            )
+        .when(overlay_open, |d| d.child(overlay_click_guard()))
+        .when_some(pending, |d, e| d.child(overlay(&theme, e)))
+        .when_some(deleting, |d, req| {
+            d.child(delete_confirm_overlay(&theme, &req, this.clone()))
         })
-}
-
-fn filter_chip(
-    theme: &Theme,
-    label: &'static str,
-    active: bool,
-    this: Entity<App>,
-    filter: CourseFilter,
-) -> impl IntoElement {
-    div()
-        .id(eid("course-filter", label))
-        .px_3()
-        .py(px(4.))
-        .rounded_full()
-        .text_xs()
-        .cursor_pointer()
-        .border_1()
-        .border_color(if active { theme.primary } else { theme.border })
-        .bg(if active {
-            theme.primary.with_alpha(0.12)
-        } else {
-            Hsla {
-                a: 0.0,
-                ..theme.foreground
-            }
-        })
-        .text_color(if active {
-            theme.primary
-        } else {
-            theme.muted_foreground
-        })
-        .hover(|s| s.border_color(theme.primary_hover))
-        .id(eid("course-filter", label))
-        .on_click(move |_e, _w, cx| {
-            this.update(cx, |this, cx| {
-                this.course_filter = filter;
-                cx.notify();
-            });
-        })
-        .child(label.to_string())
 }
 
 /// 把编辑器提交的数据写回数据库（经 Mutation API，本地改动自动盖单调戳）。
@@ -576,30 +676,4 @@ pub fn apply_draft(db: &mut Database, draft: &CourseDraft) {
     course.note = draft.note.clone();
     course.color = draft.color;
     db.save_course(course);
-}
-
-fn confirm_delete_course(owner: Entity<App>, window: &mut Window, cx: &mut gpui::App, id: String) {
-    let name = owner
-        .read(cx)
-        .db
-        .course(&id)
-        .map(|c| c.name.clone())
-        .unwrap_or_default();
-    let owner = owner.clone();
-    window.open_alert_dialog(cx, move |alert, _w, _cx| {
-        let owner = owner.clone();
-        let id = id.clone();
-        alert
-            .title("删除课程")
-            .description(format!("确定删除「{name}」吗？相关课表安排也会一并移除。"))
-            .ok_text("删除")
-            .ok_variant(ButtonVariant::Danger)
-            .on_ok(move |_e, window, cx| {
-                owner.update(cx, |this, cx| {
-                    this.db.delete_course(&id);
-                    this.commit(window, cx);
-                });
-                true
-            })
-    });
 }
