@@ -22,7 +22,7 @@ use crate::ui::components::tag::chip;
 use crate::ui::palette::{palette_at_for, tint};
 use crate::ui::tokens::text as text_tokens;
 use crate::ui::tokens::{
-    RADIUS_FULL, RADIUS_MD, RADIUS_XL, SPACE_2XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
+    RADIUS_FULL, RADIUS_MD, RADIUS_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
 use crate::ui::widgets::eid;
 use crate::views::checkins::check_burst;
@@ -481,7 +481,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .flex_col()
         .size_full()
         .overflow_y_scrollbar()
-        .p(SPACE_2XL)
+        .p_5()
         .gap(SPACE_XL)
         // 问候语是内容（不是页面名，§4.1）；日期与统计只在顶栏副标题里出现。
         .child(

@@ -31,13 +31,12 @@ use crate::ui::form::field_row;
 use crate::ui::palette::palette_at_for;
 use crate::ui::tokens::text;
 use crate::ui::tokens::{
-    INPUT_H, RADIUS_FULL, RADIUS_MD, SPACE_2XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
+    INPUT_H, RADIUS_FULL, RADIUS_MD, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
 use crate::ui::widgets::{close_editor, eid};
 
 use crate::views::courses::{
-    DeleteKind, delete_confirm_overlay, discard_stale_delete, overlay_click_guard, pending_delete,
-    request_delete,
+    DeleteKind, delete_confirm_overlay, discard_stale_delete, pending_delete, request_delete,
 };
 
 /// `list_row` 的「无点击」占位类型（`App` 指 gpui 的 App，不是本应用的 App）。
@@ -222,14 +221,15 @@ impl Render for EventEditor {
             .child(time_input("开始", &start))
             .child(time_input("结束", &end))
             .child(field_row("地点", Input::new(&location).h(INPUT_H).w_full()))
-            .child(
+            .child(field_row(
+                "备注",
                 div()
                     .w_full()
                     .rounded(RADIUS_MD)
                     .border_1()
                     .border_color(theme.border)
                     .child(Textarea::new(&note).w_full()),
-            );
+            ));
 
         let cancel_this = this.clone();
         let save_this = this.clone();
@@ -609,13 +609,11 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .child(format!("{} 条", events.len()))
         .into_any_element();
 
-    let overlay_open = pending.is_some() || deleting.is_some();
-
     div()
         .flex()
         .flex_col()
         .size_full()
-        .p(SPACE_2XL)
+        .p_5()
         .gap(SPACE_XL)
         .child(date_nav)
         .child(section_title(&theme, "当天安排", Some(count)))
@@ -640,7 +638,6 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
                         )),
                 ),
         )
-        .when(overlay_open, |d| d.child(overlay_click_guard()))
         .when_some(pending, |d, e| d.child(overlay(&theme, e)))
         .when_some(deleting, |d, req| {
             d.child(delete_confirm_overlay(&theme, &req, this.clone()))

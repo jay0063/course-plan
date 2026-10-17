@@ -14,10 +14,17 @@ use crate::ui::tokens::RADIUS_2XL;
 /// backdrop 直接用 `theme.overlay`（亮色 foreground α0.32 / 暗色 α0.55）——
 /// `ThemeConfig` 也以 `#RRGGBBAA` 保存同一 alpha，所以直接 `Theme::change`
 /// 后遮罩不会变成不透明色块。
+///
+/// **点击拦截是组件内建行为**：根节点带 `occlude()`（`HitboxBehavior::BlockMouse`）。
+/// GPUI 的 hit-test 按绘制顺序**反向**收集 hitbox，面板子元素的 hitbox 先入列、
+/// 随后走到本 hitbox 即停止——所以面板自身仍可交互，而遮罩**下面**的页面行 /
+/// 卡片收不到任何鼠标事件（点击穿透在 Phase 4 V2 泳道发现：点对话框按钮会顺带
+/// 触发底下的课程行）。视图层不再需要各自的 `overlay_click_guard()`。
 pub fn overlay(theme: &Theme, content: impl IntoElement) -> impl IntoElement {
     div()
         .absolute()
         .inset_0()
+        .occlude()
         .flex()
         .items_center()
         .justify_center()

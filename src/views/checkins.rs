@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::app::App;
-use crate::gpui::base::Easing;
 use crate::model::{self, CheckIn, Database, Repeat, WEEKDAY_SHORT};
 use crate::ui::components::button;
 use crate::ui::components::card::{CardVariant, card_with_theme};
@@ -33,7 +32,7 @@ use crate::ui::motion;
 use crate::ui::select::{Select, SelectOption};
 use crate::ui::tokens::text as text_tokens;
 use crate::ui::tokens::{
-    INPUT_H, RADIUS_FULL, RADIUS_LG, RADIUS_SM, SPACE_2XL, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
+    INPUT_H, RADIUS_FULL, RADIUS_LG, RADIUS_SM, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
 use crate::ui::widgets::{close_editor, eid};
 
@@ -121,7 +120,6 @@ impl CheckInEditor {
             date: cx.new(|cx| InputState::new(window, cx).placeholder("2026-03-05")),
             repeat: cx.new(|_| {
                 Select::new("checkin-repeat")
-                    .label("重复方式")
                     .options(vec![
                         SelectOption::new("仅一次"),
                         SelectOption::new("每天"),
@@ -230,33 +228,20 @@ impl Render for CheckInEditor {
                 "任务名称",
                 Input::new(&title).h(INPUT_H).w_full(),
             ))
-            .child(repeat)
-            .when(is_weekly, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_XS)
-                        .child(
-                            div()
-                                .text_size(text_tokens::CAPTION)
-                                .text_color(theme.muted_foreground)
-                                .child("选择星期"),
-                        )
-                        .child(day_row),
-                )
-            })
+            .child(field_row("重复方式", div().flex().child(repeat)))
+            .when(is_weekly, |d| d.child(field_row("选择星期", day_row)))
             .when(is_once, |d| {
                 d.child(field_row("指定日期", Input::new(&date).h(INPUT_H).w_full()))
             })
-            .child(
+            .child(field_row(
+                "备注",
                 div()
                     .w_full()
                     .rounded(RADIUS_LG)
                     .border_1()
                     .border_color(theme.input)
                     .child(Textarea::new(&note).w_full()),
-            );
+            ));
         body = body.child(
             div()
                 .text_size(text_tokens::CAPTION)
@@ -334,33 +319,14 @@ thread_local! {
     static ARCHIVE_CONFIRM: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// 打卡弹跳曲线（§3.17：一次性的「弹一下」）。
-///
-/// `ui::motion::bounce_spring()` 返回 gpui-base 的弹簧策略，只能交给
-/// `gpui_base::motion::spring(id, target, policy, window, cx)` —— 视图的
-/// `render(app, cx)` 拿不到 `&mut Window`，因此这里用等价的一次性
-/// Animation（同量级时长 + ease_out_back 过冲）落地；reduce-motion 由
-/// `with_animation` 自动落到终态。本 gpui 分支没有 CSS transform
-/// （`scale()`/`rotate()`），弹跳以「圆环直径 + 光晕」表达。
-pub(crate) fn bounce_animation(theme: &Theme) -> Animation {
-    let duration = motion::tokens(theme).duration_slow;
-    let curve = Easing::cubic_bezier(0.34, 1.56, 0.64, 1.0).expect("ease-out-back 控制点合法");
-    Animation::new(duration).with_easing(move |t| curve.sample(t))
-}
-
-/// 把过冲后的曲线采样值折成「0 → 1 → 0」的脉冲（终态恒为 0）。
-pub(crate) fn bounce_pulse(delta: f32) -> f32 {
-    (1.0 - (2.0 * delta - 1.0).abs()).clamp(0.0, 1.0)
-}
-
-/// 打卡勾选圆环 + 短促光晕（§3.17：「spring 弹一下 + 短促光晕」）。
+/// 打卡勾选圆环 + 短促光晕（§3.17：「弹一下 + 短促光晕」）。
 ///
 /// `anim_id` 必须随 done 状态变化，使每次勾选都重放一次弹跳。
 pub(crate) fn check_burst(theme: &Theme, done: bool, anim_id: ElementId) -> impl IntoElement {
     let theme = theme.clone();
-    let animation = bounce_animation(&theme);
+    let animation = motion::bounce_animation(&theme);
     div().with_animation(anim_id, animation, move |_, delta| {
-        let pulse = bounce_pulse(delta);
+        let pulse = motion::bounce_pulse(delta);
         div()
             .w(px(CHECK_BOX))
             .h(px(CHECK_BOX))
@@ -861,7 +827,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .flex()
         .flex_col()
         .size_full()
-        .p(SPACE_2XL)
+        .p_5()
         .gap(SPACE_XL)
         .child(section_title(&theme, "今日打卡", None::<AnyElement>))
         .child(progress_card)

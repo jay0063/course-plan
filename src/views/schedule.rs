@@ -27,13 +27,12 @@ use crate::ui::palette::{palette_at_for, tint};
 use crate::ui::select::{Select, SelectOption};
 use crate::ui::tokens::text;
 use crate::ui::tokens::{
-    INPUT_H, RADIUS_FULL, RADIUS_SM, SPACE_2XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
+    INPUT_H, RADIUS_FULL, RADIUS_SM, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
 };
 use crate::ui::widgets::{close_editor, eid};
 
 use crate::views::courses::{
-    DeleteKind, delete_confirm_overlay, discard_stale_delete, overlay_click_guard, pending_delete,
-    request_delete,
+    DeleteKind, delete_confirm_overlay, discard_stale_delete, pending_delete, request_delete,
 };
 
 /// `list_row` 的「无点击」占位类型（`App` 指 gpui 的 App，不是本应用的 App）。
@@ -135,14 +134,12 @@ impl SessionEditor {
             courses,
             course: cx.new(|_| {
                 Select::new("session-course")
-                    .label("所属课程")
                     .placeholder("选择课程")
                     .options(options)
                     .selected(selected)
             }),
             weekday: cx.new(|_| {
                 Select::new("session-weekday")
-                    .label("星期")
                     .options(day_options)
                     .selected(Some(draft.weekday.saturating_sub(1) as usize))
             }),
@@ -221,8 +218,8 @@ impl Render for SessionEditor {
             .flex()
             .flex_col()
             .gap(SPACE_MD)
-            .child(course)
-            .child(weekday)
+            .child(field_row("所属课程", div().flex().child(course)))
+            .child(field_row("星期", div().flex().child(weekday)))
             .child(time_input("开始", &start))
             .child(time_input("结束", &end))
             .child(field_row("教室", Input::new(&room).h(INPUT_H).w_full()));
@@ -342,7 +339,7 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
             .flex()
             .flex_col()
             .size_full()
-            .p(SPACE_2XL)
+            .p_5()
             .gap(SPACE_XL)
             .child(section_title(&theme, "本周安排", None::<AnyElement>))
             .child(empty_state(
@@ -358,9 +355,6 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
             .flex_1()
             .min_h_0()
             .child(empty)
-            .when(pending.is_some() || deleting.is_some(), |d| {
-                d.child(overlay_click_guard())
-            })
             .when_some(pending, |d, e| d.child(overlay(&theme, e)))
             .when_some(deleting, |d, req| {
                 d.child(delete_confirm_overlay(&theme, &req, this.clone()))
@@ -640,13 +634,11 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
         .child(format!("共 {} 条", app.db.live_session_count()))
         .into_any_element();
 
-    let overlay_open = pending.is_some() || deleting.is_some();
-
     div()
         .flex()
         .flex_col()
         .size_full()
-        .p(SPACE_2XL)
+        .p_5()
         .gap(SPACE_XL)
         .child(section_title(&theme, "本周安排", Some(count)))
         .child(
@@ -674,7 +666,6 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
                         )),
                 ),
         )
-        .when(overlay_open, |d| d.child(overlay_click_guard()))
         .when_some(pending, |d, e| d.child(overlay(&theme, e)))
         .when_some(deleting, |d, req| {
             d.child(delete_confirm_overlay(&theme, &req, this.clone()))

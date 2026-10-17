@@ -24,6 +24,10 @@ pub fn run() {
     application().with_assets(assets::AppAssets).run(|cx| {
         init(cx);
 
+        // 组件库内置文案切中文（日历 / 日期选择器的月份与星期、通知按钮等）。
+        // 必须在任何组件渲染之前调用；`set_locale` 是进程级设置（rust-i18n）。
+        gpui::component::set_locale("zh-CN");
+
         // 通知与桌面集成使用稳定的应用标识。
         cx.set_app_identity(APP_ID, "CoursePlan");
 

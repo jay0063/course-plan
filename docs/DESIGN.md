@@ -170,9 +170,9 @@
 | `sm` | 8 | 紧凑行内（按钮内 padding-y、列表项内 chip 间距） |
 | `md` | 12 | 标准按钮 padding-x、行内 gap |
 | `lg` | 16 | 卡片内 padding、section 之间 gap |
-| `xl` | 20 | 卡片之间、章节标题距离 |
+| `xl` | 20 | 卡片之间、章节标题距离、**页面 padding（`p_5`，§3.1.3）** |
 | `2xl` | 24 | 大区块之间 |
-| `3xl` | 32 | 页面外 padding（左右各 32，桌面 1280 宽度下内容 ~1216） |
+| `3xl` | 32 | 备用大间距（当前页面未用） |
 
 ### 2.5 字体与字阶
 
@@ -218,14 +218,16 @@
 
 | Token | 亮色 | 暗色 | 用途 |
 |---|---|---|---|
-| `chart_1` | `#A9D5F2` | `#3D7CA8` | 当日柱形（最浅） |
-| `chart_2` | `#5AA9E6` | `#5AA9E6` | 普通柱形 |
-| `chart_3` | `#3F8FD0` | `#7FBFEE` | 普通柱形 |
-| `chart_4` | `#2E73B5` | `#A8D2F2` | 普通柱形 |
-| `chart_5` | `#1F5C97` | `#CFE5F8` | 普通柱形 |
+| `chart_1` | `#A9D5F2` | `#3D7CA8` | 备用最浅阶（当前图表未用） |
+| `chart_2` | `#5AA9E6` | `#5AA9E6` | **dashboard 柱形唯一用色**：今日满色 / 其余 α0.45（§3.16） |
+| `chart_3` | `#3F8FD0` | `#7FBFEE` | 备用中间阶（未用） |
+| `chart_4` | `#2E73B5` | `#A8D2F2` | 备用中间阶（未用） |
+| `chart_5` | `#1F5C97` | `#CFE5F8` | 备用最深阶（未用） |
 | `chart_bullish` | `#3D8246` | `#7CCE89` | 上升 |
 | `chart_bearish` | `#9C2929` | `#F08B8B` | 下降 |
 | `chart_grid` | `#EADFC8` | `#3A342C` | 网格线 |
+
+**柱形取色（与 §3.16 同一条规则，v1.4 对齐）**：本系统的手写柱形图只用 `chart_2`——今日柱 `theme.chart_2` 满色 + 数值 600，其余日 `theme.chart_2.with_alpha(0.45)`。`chart_1/3/4/5` 是留给未来图表（gpui-component chart）的 ramp，当前不进 dashboard。
 
 ### 2.8 图标尺寸
 
@@ -264,10 +266,10 @@
 | `easing_enter` | `cubic-bezier(0.16, 1.0, 0.3, 1.0)` | 入场（"快出慢收"——活力感） |
 | `easing_exit` | `cubic-bezier(0.4, 0, 1, 1)` | 出场 |
 | `easing_move` | `cubic-bezier(0.2, 0, 0, 1)` | 平面位移（页面切换） |
-| `spring_control` | `Spring::new(220ms)` 阻尼 0.85 | 打卡勾选弹一下 |
+| `spring_control` | `Spring::new(220ms)` 阻尼 0.85 | 保留令牌（打卡弹跳 v1.4 起走 `bounce_animation`，见 §6.5） |
 | `spring_move` | `Spring::new(320ms)` 阻尼 0.85 | 拖拽/重排 |
 
-**reduce-motion 兜底**：所有用 `with_animation` 的组件自动遵守（`AnimationElement` 在 `cx.reduce_motion()` 时直接渲染终态）；自定义 spring 用 `if reduce_motion { bounce_spring(true) } else { bounce_spring(false) }`。**Phase 4 写视图时直接调用 `ui::motion::page_enter_animation()` / `ui::motion::bounce_spring(...)`**（app.rs 已用前者做页面转场）。
+**reduce-motion 兜底**：所有用 `with_animation` 的组件自动遵守（`AnimationElement` 在 `cx.reduce_motion()` 时直接渲染终态）。**Phase 4 写视图时直接调用 `ui::motion::page_enter_animation()` / `ui::motion::bounce_animation(theme)`**（app.rs 用前者做页面转场，打卡勾选用后者，见 §3.17）。gpui-base 的 `spring(...)` 需要 `&mut Window`，视图 `render(app, cx)` 拿不到——因此 `motion` 模块不提供可播放的 spring（旧 `bounce_spring` 已删除）。
 
 ---
 
@@ -303,8 +305,9 @@
 
 #### 3.1.3 Content frame
 
-- 外层 padding：`padding: 24`（桌面 ≥1280）/ `20`（1024-1279）。
-- 默认 `flex flex_col gap: 20`。
+- 页面 padding：**20**（`p_5`）——**所有宽度统一**，不存在按宽度的分档（v1.3 前的文档写过「≥1280 用 24 / 更窄用 20」，代码从未实现；V1/V2 泳道最初自己用了 `SPACE_2XL`（24），v1.4 已把 8 页统一为 `p_5`）。
+  - 1280 下换算：内容区 = 1280 − 256（侧栏）− 2×20 = **984**；schedule 的 696 网格最小宽就是按「左右各 20、共 40」推导的（左栏 = 984 − 260 − 16 = 708 ≥ 696，见 §4.3）。
+- 默认 `flex flex_col gap: 20`（`SPACE_XL`；settings 卡堆叠用 16）。
 - 页面 body 以 `section_title` 开头，写**分节名**（如"本周安排"），不写页面名；dashboard 的问候语、settings 的卡片堆叠可直接作为首块，不强制 `section_title`。
 - **不放** `page_header`、不放页面名、不放主 CTA（见 §3.1.4）。
 
@@ -429,9 +432,12 @@ API：`ui::components::empty_state::empty_state(theme, variant, icon, title, des
 
 API：
 - `ui::components::overlay::overlay(theme, content)`：全屏绝对定位 backdrop + 居中容器。backdrop 直接用 `theme.overlay`（亮色 `foreground` α0.32 / 暗色 α0.55，`ThemeConfig` 以 `#RRGGBBAA` 保存）。容器 `bg: panel`、`rounded_2xl` (28)、大阴影、border、padding 24、min-width 420、max-width 560。
+- **点击拦截内建（v1.4）**：`overlay` 根节点带 `occlude()`（`HitboxBehavior::BlockMouse`）。GPUI hit-test 反向收集 hitbox——面板子元素先入列、走到遮罩根即停止，所以面板仍可交互、而遮罩**下面**的页面行 / 卡片收不到鼠标事件。视图层不得再自建「透明 guard 层」（旧的 `overlay_click_guard()` 已删除）。
 - `dialog(theme, title, body, footer)`：基于 `overlay` 内容的列布局，顶部 title 17/600，底部按钮行右对齐。
 - `alert_dialog(theme, id_prefix, title, description, ok_label, cancel_label, ok_variant, on_ok, on_cancel)`：基于 `dialog`；`id_prefix` 生成唯一 id（`{prefix}:ok` / `{prefix}:cancel`），cancel 必须接真实关闭回调。
 - `first_login_prompt(theme, probe, on_choice)`：**专属三选一首登**——结构详见 §3.13。
+
+**已接受限制**：`overlay` 挂在页面根（`absolute().inset_0()` 于 content 区），所以模态只压暗**内容区**，侧栏 / 顶栏仍可交互。要整窗压暗需要一个 shell 级 dialog host——推迟到后续版本（§7）。
 
 ### 3.13 First-login dialog（首登三选一）
 
@@ -446,6 +452,10 @@ API：
 
 API：`ui::form::field_row(label, control)`（已存在，签名不变）。label `caption` `muted_foreground`，固定宽 84px，右边控制填满。
 
+**对话框表单的唯一标准（v1.4 统一）**：所有编辑器对话框（课程 / 安排 / 日程 / 打卡 / 提醒 / 备忘）的字段一律用 `field_row`（label 左置）——包括输入框、`Select`、`DatePicker` / `TimeField`、`tab_chips`、备注 `Textarea`、色板与星期选择行。禁止「label 在控件上方」的写法：
+- 自定义 `ui::select::Select::label()` 会把标签渲染在触发器的**上方**——对话框里不要传 `.label()`，改由 `field_row` 给 label（该方法仅保留给对话框之外的内联场景，当前无调用点）。
+- 备注 Textarea 也要包 `field_row("备注", ...)`（V3 提醒编辑器是最早的样板）。
+
 ### 3.15 Input / Select / Date / Time
 
 Phase 4 必须使用 gpui-kit 原生组件，**禁止**继续用 `<input type="date">` 文本：
@@ -458,7 +468,7 @@ Phase 4 必须使用 gpui-kit 原生组件，**禁止**继续用 `<input type="d
 
 ### 3.16 Chart
 
-dashboard "本周课时分布" 当前手写柱形图。Phase 4 V1 **可保留手写版本**（信息密度好），也可替换为 `chart::bar`（gpui-component）。**若保留**，颜色用 `chart_1..5`，圆角 `rounded_md` (10)；非今日柱 `chart_2.with_alpha(0.45)`，今日柱 `chart_2` 满色 + 数值 600 加粗。
+dashboard "本周课时分布" 当前手写柱形图。Phase 4 V1 **可保留手写版本**（信息密度好），也可替换为 `chart::bar`（gpui-component）。**若保留**（现状即保留）：只用 `theme.chart_2` 一种色——非今日柱 `chart_2.with_alpha(0.45)`，今日柱 `chart_2` 满色 + 数值 600 加粗；圆角 `rounded_md` (10)。与 §2.7 的说明同源。
 
 ### 3.17 Check-in celebration（打卡庆祝）
 
@@ -467,6 +477,8 @@ dashboard "本周课时分布" 当前手写柱形图。Phase 4 V1 **可保留手
 - 同时勾选圆环 `success` 实心填充从 0% → 100% 在 200ms 内。
 - **若当日所有打卡任务完成**：触发"庆祝瞬间"——中心 `Sparkle` icon 浮现 + scale(0 → 1) 320ms + rotate(0 → 30deg) 400ms；同时背景从 `surface` → `success.with_alpha(0.08)` 在 600ms 内淡入。1200ms 后回淡至 surface。
 - **reduce-motion**：跳过所有 scale/rotate，只保留颜色变化。
+
+**实现注（v1.4）**：本 gpui 分支没有 CSS transform（`scale()`/`rotate()`），弹跳以「圆环直径 + 短促光晕」表达（`checkins::check_burst`）；动画函数是 `ui::motion::bounce_animation(theme)` + `bounce_pulse(delta)`（§6.5），reduce-motion 由 `with_animation` 自动落到终态。
 
 ### 3.18 Page transition（页面切换淡入）
 
@@ -521,8 +533,9 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
   - 顶部：日期选择器（左右箭头 + 当前日期 + "今天"快捷按钮）。
   - `section_title`（如"当天安排"）。
   - 当日日程 list：每行 8px 圆点（按关联课程色或 primary）+ 时间段 + 标题 + 地点 + 完成 checkbox。
+  - 右侧 220px「当天课程」side rail（`RAIL_W`）：按当前选中日期取 `sessions_on(weekday)`，每行课程色圆点 + 课程名 + 时间段（`event-course:{session_id}`）。**v1.4 确认有意保留**（Phase 2 的既有行为与信息密度，V2 未删）。日程清单为空时 rail 照常显示"这一天没有课程"。
 - **关键交互**：日期切换；点击行 → 编辑；勾选完成 → 划线 + 灰色。
-- **保留行为**：日期导航；按日期筛选；已完成状态视觉；与课程关联。
+- **保留行为**：日期导航；按日期筛选；已完成状态视觉；与课程关联；右侧当天课程 rail。
 
 ### 4.5 提醒事项（Reminders）——V3
 
@@ -622,7 +635,7 @@ content 区进入动画：opacity 0 → 1 + translateY(4px → 0)，`duration_sl
 
 - 所有 spring/scale/rotate → 立即完成（`duration_instant`）。
 - 颜色和透明度过渡保留（信息性）。
-- 由 `theme.motion` 自动遵守 + 自定义 spring 调用前 `if !reduce_motion { spring() } else { transition() }`。
+- 由 `theme.motion` 自动遵守；本 gpui 分支没有可播放的自定义 spring（需要 `&mut Window`），弹跳统一走 `ui::motion::bounce_animation`（§6.5），`with_animation` 在 reduce-motion 时直接渲染终态。
 
 ---
 
@@ -710,13 +723,20 @@ pub fn page_enter_easing() -> Easing;
 pub fn page_exit_easing() -> Easing;
 pub fn move_easing() -> Easing;
 pub fn page_enter_duration(reduce_motion: bool) -> Duration;
-pub fn page_enter_animation() -> Animation;   // 260ms + easing_enter，with_animation 用
-pub fn bounce_spring(reduce_motion: bool) -> Spring;
+pub fn page_enter_animation() -> Animation;            // 260ms + easing_enter，with_animation 用
+pub fn bounce_animation(theme: &Theme) -> Animation;   // 打卡弹跳：duration_slow + ease-out-back 过冲
+pub fn bounce_pulse(delta: f32) -> f32;                // 折成「0 → 1 → 0」脉冲（终态恒 0）
 pub fn tokens(theme: &Theme) -> &MotionTokens;
 ```
 
 **不存在** `pop_in` / `pop_out` / `spring_bounce`：Phase 3 冻结时它们未实现，已从 API 移除。
 页面转场已由 `app.rs` 用 `with_animation` + `page_enter_animation()` 落地。
+
+**`bounce_spring` 已删除（v1.4）**：它返回 gpui-base 的 `Spring` 策略，只能交给
+`gpui_base::motion::spring(id, target, policy, window, cx)`——需要 `&mut Window`，而视图的
+`render(app, cx)` 拿不到；本 gpui 分支也没有 CSS transform。打卡弹跳统一走
+`bounce_animation(theme)` + `bounce_pulse(delta)`，由调用方把脉冲折进几何 / 颜色
+（`views::checkins::check_burst`：圆环直径 + 光晕）。reduce-motion 由 `with_animation` 自动落到终态。
 
 ### 6.6 `src/ui/components/` 模块
 
@@ -912,6 +932,27 @@ first-login local: "first-login:local"
 first-login cancel:"first-login:cancel"
 ```
 
+**重复 ElementId 规则（V1 发现，v1.4 入册）**：同一实体在页面上出现多次时，id 必须带**分区前缀**，
+否则 GPUI 只认第一个、点击/查询都会打错目标。打卡页同一任务同时在「待打卡 / 今日已完成 / 全部任务」
+三列，因此是：
+
+```
+checkin toggle:    eid("checkin-toggle-pending"|"-done"|"-all", id)   → "checkin-toggle-pending:{id}"
+checkin edit:      eid("checkin-edit-{pending|done|all}", id)
+checkin archive:   eid("checkin-arch-{pending|done|all}", id)
+checkin burst 动画: "checkin-burst:{col}:{id}:{done}"                  // 动画 id 还要带 done 以重放
+```
+
+同理，`tab_chips` / 过滤器生成的 id 是 `{prefix}:{label}`（中文 label 原样拼进去）：
+
+```
+course filter:     "course-filter:全部" / "course-filter:校内" / "course-filter:补习"
+reminder tabs:     "reminder-tab:待办" / "reminder-tab:已完成"
+memo tabs:         "memo-tab:全部" / "memo-tab:已置顶"
+```
+
+页面自行加的新 id 也必须遵守这两条（唯一性 + 中文原样），否则 QA 的 `window.click(...)` 会命中错误元素。
+
 ### 6.9 图标注册（写入 `src/assets.rs`）
 
 Phase 3 已登记：`CalendarDays / Clock / Flame / GraduationCap / ListTodo / NotebookPen /
@@ -935,6 +976,10 @@ DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须�
 - 不替换现有手写表单输入——Phase 4 V2 改为 gpui-kit DatePicker/TimeField/Input。
 - 不删 chip 代码（保留以备 Phase 4 V2/V3 切换到 tab_chips）。
 - 不改 store、model、sync 任何一行。
+
+**已接受的限制**（Phase 4 收官（v1.4）确认，不阻塞发布）：
+- **模态只压暗内容区**：`overlay` 挂在页面根（`absolute().inset_0()` 于 content 区，含删除确认与编辑器），侧栏 / 顶栏在模态打开时仍可点击。整窗压暗需要一个 shell 级 dialog host——推迟。
+- **删除确认请求状态用 GPUI `Global`**：`PendingDelete` 全局存 `{page, kind, id, name}`，由课程页 `request_delete` 写入、`discard_stale_delete` 负责跨页清理（切页丢弃陈旧请求）。`app.rs` 暂无对应字段槽位，保持现状。
 
 ---
 
@@ -968,5 +1013,6 @@ DESIGN 早期写的 `Sparkles` 不存在）。任何新增 `IconName::X` 必须�
 | v1.1 | 2026-10-17 | Gate 3 预检修复：色相统一走 `hsl_deg(度数)`（gpui `Hsla.h ∈ [0,1)`）；课程色板统一改为 **hex-canonical**（`hex_color()` 反算，删除手写 HSL 值；暗色「嫩芽」定为 `#BCDC72`）；`Theme::change` 不再覆盖自有调色板（安装自定义 ThemeConfig） |
 | v1.2 | 2026-10-17 | Gate 3 修复（lane DS-2）：**hex 是唯一契约**（`hex_color()` 反算，删除 HSL 列与 `hsl_deg_a`）；亮色 canvas 回暖纸 `#FBF6EC`；饱和 fill 加深 + 白字 / 暗色提亮 + 深字，§5.1 列真实对比度并由测试锁定；`tag/badge/filled chip` 自适应选字色（去掉写死白字）；`ThemeConfig` 修 `progress.bar` 键、补 `chart.1..5`、alpha 以 `#RRGGBBAA` 保留（overlay/scrollbar/drop_target/list_active_border/table_active_border），`selection`/`list_active` α 取 vendor 上限内；JSON builder 改为 `default()` + 字段赋值；`gpui-kit` 精确锁 `=0.7.3`；组件对齐 §3（按钮 36/圆角 14、list_row 透明+hover、card Hero shadow_md / Outlined 2px / 标题 17、stat_tile min_h108+value32+icon18、empty_state 56/32+Sparkle、alert_dialog 唯一 id + 真 cancel、nav active primary、badge 语义色）；app.rs 接入 `first_login_prompt` 并删除重复枚举；页面转场 260ms 唯一 id（reduce-motion 安全）；测试 id 统一（brand/theme-toggle/quick-add/sync-pill/sidebar sync indicator 可点击）；schedule 日列固定 88px 宽 + 水平滚动修周日截断；暗色课程盘经 `palette_at_for` 可达 |
 | v1.3 | 2026-10-17 | Gate 3 残余修复（lane DS-3）：**对比度**——active nav 文字/图标改 `foreground`（`list_active` 复合底上 11.00:1 / 12.94:1，保留 3px `primary` 竖条与底色）；亮色 `muted_foreground` `#7A6F60 → #726758`（sidebar 4.68 / surface 5.14 / panel 5.40；顺带把 sync pill 离线态 `muted` 上的 4.04 修到 4.54）；`button::link` 改用蓝色 `link/link_hover/link_active`（亮 `#2E6A99/#2A5F8A/#24537A`、暗 `#7FBFEE/#97CBF3/#6AABE0`，panel/surface 全 ≥4.5，不再用 `primary` 2.4:1）；`sidebar_accent_foreground` 对齐为 `foreground`；WCAG 测试新增 shell/nav/link 对；`text_on_fill`/`readable_text` 增加纯黑/纯白兜底（暖墨/纸白不足时保证 ≥4.58，修 `#777777` 中灰）；亮色 `warning` 提亮 `#8F6612 → #9A650F`（去泥；白字 4.95、panel 文字 4.83）。**文档**——§3.1.4 确立唯一规则「顶栏独占页面名 + `quick_add` 主 CTA，内容区只用 `section_title`/次级动作」并同步 §4.1–4.8（删除逐页 `page_header` + 主按钮描述）；§2.8 按 vendor 实际修正 `Size` = 12/14/16/24；§6.1 记录 12 个私有 `base.*` 色在直接 `Theme::change` 后回退 gpui 默认的已接受限制；§9 v1.1 表述修正。**组件/布局**——card `Default` 实现 hover `border_strong`；schedule 网格最小宽 `672 → 696`（56 + 7×88 + 6×4，修最右列裁切） |
+| v1.4 | 2026-10-18 | Phase 4 收官整合（lane DS-4，跨泳道 findings 归并）：**交互**——`overlay()` 根节点内建 `occlude()`（`BlockMouse`）：点击不再穿透到底下的行/卡片，删除各页自建的 `overlay_click_guard()`（V2 发现）；**动效**——打卡弹跳提升为 `ui::motion::bounce_animation(theme)` + `bounce_pulse(delta)`（视图 `render` 拿不到 `&mut Window`，删除不可用的 `bounce_spring`），checkins 直接调用；**中文**——`run()` 与测试 Harness 调 `gpui_component::set_locale("zh-CN")`（日历月份/星期变中文）；**一致性**——8 页页面 padding 统一 `p_5`（20，删除 §3.1.3 未落地的 24 分档；schedule 696 数学按 40 总侧 padding 对齐，v2 lane 断言同步）；对话框表单统一 `field_row`（课程/安排/日程/打卡编辑器的 Select 内置上方标签、色板/星期 caption、备注 Textarea 全部左置 label，§3.14）；**文档**——§2.7/§3.16 柱形取色对齐（今日 `chart_2` 满色、其余 α0.45）、§4.4 记录「当天课程」side rail 有意保留、§5.5/§6.5 动效 API 同步、§6.8 新增重复 ElementId 规则与中文过滤器 id 示例、§7 记录两项已接受限制（模态只压内容区；删除确认状态在 GPUI `Global`） |
 
 任何后续调整必须更新本表并同步 §6 API Freeze。

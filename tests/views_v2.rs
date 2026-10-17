@@ -17,7 +17,7 @@ use course_plan::gpui::component::ThemeMode;
 use course_plan::gpui::test::TestWindowExt;
 use course_plan::gpui::{AnyWindowHandle, Entity};
 use course_plan::model::{self, EventItem};
-use course_plan::ui::tokens::{SIDEBAR_W, SPACE_2XL};
+use course_plan::ui::tokens::{SIDEBAR_W, SPACE_XL};
 use course_plan::views::events::EventDraft;
 use course_plan::views::schedule::SessionDraft;
 use image::RgbaImage;
@@ -82,8 +82,8 @@ fn lane_v2_pages_light_and_dark() {
 /// 计划表：1280 宽下周日列必须完整可见（§4.3 / §8）。
 ///
 /// 两层证据：
-/// 1. 宽度算式——内容区 = 窗口 1280 − 侧栏 256 − 页面左右 padding 48 = 976，
-///    左栏 = 976 − 260（右栏）− 16（间距）= 700 ≥ 696（网格最小宽）；
+/// 1. 宽度算式——内容区 = 窗口 1280 − 侧栏 256 − 页面左右 padding 40 = 984，
+///    左栏 = 984 − 260（右栏）− 16（间距）= 708 ≥ 696（网格最小宽）；
 /// 2. 像素证据——周日列唯一的课程「奥数」用 palette[6] 嫩芽 `#A6C84B` 色条，
 ///    必须能在「周日列应有的 x 区间」内找到该色像素。
 #[test]
@@ -94,7 +94,7 @@ fn lane_v2_schedule_sunday_stays_visible() {
     }
 
     // 1. 布局算式（token 化，防止 padding / 栏宽漂移后静默裁切）。
-    let content_w = support::WINDOW_W - f32::from(SIDEBAR_W) - 2.0 * f32::from(SPACE_2XL);
+    let content_w = support::WINDOW_W - f32::from(SIDEBAR_W) - 2.0 * f32::from(SPACE_XL);
     let left_col_w = content_w - RAIL_W - RAIL_GAP;
     assert!(
         left_col_w >= GRID_MIN_W,
@@ -108,13 +108,13 @@ fn lane_v2_schedule_sunday_stays_visible() {
 
     let scale = support::WINDOW_W;
     let device_scale = image.width() as f32 / scale;
-    // 周日列（第 7 列）的逻辑 x 区间：内容左缘 256+24，时间槽列 56，每列 88+4。
+    // 周日列（第 7 列）的逻辑 x 区间：内容左缘 256+20，时间槽列 56，每列 88+4。
     let day_col = 88.0 + 4.0;
-    let sunday_x0 = f32::from(SIDEBAR_W) + f32::from(SPACE_2XL) + 56.0 + 6.0 * day_col;
+    let sunday_x0 = f32::from(SIDEBAR_W) + f32::from(SPACE_XL) + 56.0 + 6.0 * day_col;
     let sunday_x1 = sunday_x0 + 88.0;
     // 校验收敛：周日列必须落在左栏内（不被右栏覆盖）。
     assert!(
-        sunday_x1 + f32::from(SPACE_2XL) <= support::WINDOW_W - RAIL_W,
+        sunday_x1 + f32::from(SPACE_XL) <= support::WINDOW_W - RAIL_W,
         "周日列右缘 {sunday_x1} 已进入右栏/窗口外：会被裁切"
     );
 

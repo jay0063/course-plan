@@ -24,9 +24,7 @@ use crate::ui::form::field_row;
 use crate::ui::palette::palette_at_for;
 use crate::ui::select::{Select, SelectOption};
 use crate::ui::tokens::text;
-use crate::ui::tokens::{
-    INPUT_H, RADIUS_FULL, RADIUS_MD, SPACE_2XL, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS,
-};
+use crate::ui::tokens::{INPUT_H, RADIUS_FULL, RADIUS_MD, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS};
 use crate::ui::widgets::{close_editor, eid};
 
 // MARK: - 删除确认挂起态（courses / schedule / events 三页共用）
@@ -128,15 +126,9 @@ pub(crate) fn request_delete(
     cx.notify();
 }
 
-/// 遮罩点击拦截层。
-///
-/// `ui::components::overlay` 的 backdrop 没有 `occlude()`，GPUI 的 hit-test 会把
-/// 遮罩**下面**的页面元素一起收进 mouse listener 列表（点击穿透：点对话框按钮会
-/// 顺带触发底下的课程行 / 安排卡片）。在遮罩之前铺一层全屏透明 `occlude` 层，
-/// hit-test 走到它即停止，下层页面不再收到鼠标事件。
-pub(crate) fn overlay_click_guard() -> AnyElement {
-    div().absolute().inset_0().occlude().into_any_element()
-}
+// 遮罩点击拦截由 `ui::components::overlay::overlay` 组件内建
+// （根节点 `occlude()`，`BlockMouse` 在 hit-test 走到遮罩时停止）——
+// 各视图不再需要自己的 `overlay_click_guard()`。
 
 /// 删除确认对话框（`overlay` + `alert_dialog`：全屏遮罩 + 唯一按钮 id）。
 pub(crate) fn delete_confirm_overlay(
@@ -269,7 +261,6 @@ impl CourseEditor {
             note: cx.new(|cx| TextareaState::new(window, cx).placeholder("备注")),
             kind: cx.new(|_| {
                 Select::new("course-kind")
-                    .label("课程类型")
                     .options(vec![
                         SelectOption::new("学校课程").hint("校内常规课程"),
                         SelectOption::new("补习课程").hint("课外辅导 / 兴趣班"),
@@ -337,7 +328,7 @@ impl Render for CourseEditor {
             .flex_col()
             .gap(SPACE_MD)
             .child(field_row("课程名称", Input::new(&name).h(INPUT_H).w_full()))
-            .child(kind)
+            .child(field_row("课程类型", div().flex().child(kind)))
             .child(field_row("科目", Input::new(&subject).h(INPUT_H).w_full()))
             .child(field_row(
                 "老师/机构",
@@ -347,22 +338,19 @@ impl Render for CourseEditor {
                 "上课地点",
                 Input::new(&location).h(INPUT_H).w_full(),
             ))
-            .child(
+            .child(field_row(
+                "备注",
                 div()
                     .w_full()
                     .rounded(RADIUS_MD)
                     .border_1()
                     .border_color(theme.border)
                     .child(Textarea::new(&note).w_full()),
-            )
-            .child(
-                div()
-                    .text_size(text::LABEL_SM)
-                    .font_weight(FontWeight(600.0))
-                    .text_color(theme.muted_foreground)
-                    .child("标识颜色"),
-            )
-            .child(color_row(&theme, self.color, this.clone()));
+            ))
+            .child(field_row(
+                "标识颜色",
+                color_row(&theme, self.color, this.clone()),
+            ));
 
         let cancel_this = this.clone();
         let save_this = this.clone();
@@ -638,18 +626,15 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> impl IntoElement {
         .child(format!("{} 门", courses.len()))
         .into_any_element();
 
-    let overlay_open = pending.is_some() || deleting.is_some();
-
     div()
         .flex()
         .flex_col()
         .size_full()
-        .p(SPACE_2XL)
+        .p_5()
         .gap(SPACE_XL)
         .child(section_title(&theme, "全部课程", Some(count)))
         .child(filters)
         .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(list))
-        .when(overlay_open, |d| d.child(overlay_click_guard()))
         .when_some(pending, |d, e| d.child(overlay(&theme, e)))
         .when_some(deleting, |d, req| {
             d.child(delete_confirm_overlay(&theme, &req, this.clone()))

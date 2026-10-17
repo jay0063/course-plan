@@ -4,7 +4,7 @@
 //! `App::reduce_motion()`（reduce 时直接落到 oneshot 的终态）。
 
 use crate::gpui::Animation;
-use crate::gpui::base::{Easing, Spring};
+use crate::gpui::base::Easing;
 use crate::gpui::component::{MotionTokens, Theme};
 use std::time::Duration;
 
@@ -47,13 +47,23 @@ pub fn page_enter_animation() -> Animation {
     Animation::new(page_enter_duration(false)).with_easing(move |delta| easing.sample(delta))
 }
 
-/// 打卡勾选弹跳 spring（reduce-motion 时退化为 0ms）。
-pub fn bounce_spring(reduce_motion: bool) -> Spring {
-    if reduce_motion {
-        Spring::new(Duration::ZERO)
-    } else {
-        Spring::new(Duration::from_millis(220)).with_damping(0.65)
-    }
+/// 打卡勾选弹跳（§3.17：一次性的「弹一下」）。
+///
+/// 这是视图可用的弹跳 API：`gpui_base::motion::spring(id, target, policy, window, cx)`
+/// 需要 `&mut Window`，而视图的 `render(app, cx)` 拿不到；本 gpui 分支也没有
+/// CSS transform（`scale()`/`rotate()`），因此弹跳以等价的一次性 `Animation`
+/// （`duration_slow` + ease-out-back 过冲）表达，由调用方把脉冲折进自己的
+/// 几何 / 颜色（见 `views::checkins::check_burst`：圆环直径 + 光晕）。
+/// reduce-motion 由 `with_animation` 自动落到终态。
+pub fn bounce_animation(theme: &Theme) -> Animation {
+    let duration = tokens(theme).duration_slow;
+    let curve = Easing::cubic_bezier(0.34, 1.56, 0.64, 1.0).expect("ease-out-back 控制点合法");
+    Animation::new(duration).with_easing(move |t| curve.sample(t))
+}
+
+/// 把过冲后的曲线采样值折成「0 → 1 → 0」的脉冲（终态恒为 0）。
+pub fn bounce_pulse(delta: f32) -> f32 {
+    (1.0 - (2.0 * delta - 1.0).abs()).clamp(0.0, 1.0)
 }
 
 /// 从 Theme.motion 派生：把所有令牌整合为只读快照。
