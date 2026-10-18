@@ -9,6 +9,16 @@ on:
         description: "要发布的 tag（如 v0.1.0），必须已存在且指向要发布的提交"
         required: true
         type: string
+      with_linux:
+        description: "同时打包 Linux（默认关闭；2026-10-19 起暂时停用）"
+        required: false
+        type: boolean
+        default: false
+      with_macos:
+        description: "同时打包 macOS（默认关闭；2026-10-19 起暂时停用）"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,8 +70,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # 暂时停用（2026-10-19，用户要求）：默认不打包 Linux。
+  # 需要时手动触发 workflow_dispatch 并勾选 with_linux；
+  # 恢复常态打包时删除下面的 if 行即可（脚本与文档保持可用）。
   linux:
     name: Linux packages
+    if: ${{ inputs.with_linux }}
     needs: checks
     runs-on: ubuntu-latest
     steps:
@@ -119,8 +133,12 @@ jobs:
             dist/*.exe
             dist/*.zip
 
+  # 暂时停用（2026-10-19，用户要求）：默认不打包 macOS。
+  # 需要时手动触发 workflow_dispatch 并勾选 with_macos；
+  # 恢复常态打包时删除下面的 if 行即可（脚本与文档保持可用）。
   macos:
     name: macOS app (${{ matrix.arch }})
+    if: ${{ inputs.with_macos }}
     needs: checks
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -316,7 +334,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [checks, linux, windows, macos, server-image]
+    # 只依赖仍然启用的作业：若 needs 里含被 if 跳过的 job，GitHub 会把本作业一起跳过。
+    needs: [checks, windows, server-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -329,7 +348,7 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-          pattern: "{linux-packages,windows-installer,macos-*}"
+          pattern: "windows-installer"
       - name: List collected assets
         run: ls -lh release-assets
       - name: Publish release
@@ -340,18 +359,16 @@ jobs:
           generate_release_notes: true
           files: release-assets/**
           body: |
-            ## 安装包
+            ## 安装包（Windows）
 
             | 资产 | 平台 | 说明 |
             | --- | --- | --- |
-            | `course-plan_<version>_amd64.deb` | Linux x86_64 | Debian / Ubuntu 安装包：`sudo apt install ./course-plan_<version>_amd64.deb` |
-            | `course-plan-<version>-x86_64.AppImage` | Linux x86_64 | 免安装单文件：`chmod +x` 后直接运行（需要 FUSE2，或 `--appimage-extract`） |
-            | `course-plan-<version>-amd64.tar.gz` | Linux x86_64 | 便携版 tar.gz，解压即用 |
             | `CoursePlan-Setup-<version>.exe` | Windows 10/11 x64 | Inno Setup 安装包（开始菜单/桌面快捷方式 + 卸载项） |
             | `CoursePlan-<version>-windows-x64.zip` | Windows 10/11 x64 | 便携版，解压即用；需「Microsoft Visual C++ 2015-2022 Redistributable (x64)」 |
-            | `课程计划-<version>-macos-aarch64.dmg` | macOS 11+ Apple Silicon | 拖入「应用程序」安装 |
-            | `课程计划-<version>-macos-x86_64.dmg` | macOS 11+ Intel | 拖入「应用程序」安装 |
-            | `课程计划-<version>-macos-<arch>.app.tar.gz` | macOS | `.app` 归档，用于公证校验 / 手动分发 |
+
+            > **Linux / macOS 客户端打包自 2026-10-19 起暂时停用**（仅影响自动发版）。
+            > 需要时手动触发本工作流并勾选 `with_linux` / `with_macos` 即可产出对应平台产物；
+            > `packaging/linux`、`packaging/macos` 脚本与文档保持可用。
 
             各平台的使用与排障见 [`docs/RELEASE.md`](https://github.com/${{ github.repository }}/blob/${{ env.RELEASE_TAG }}/docs/RELEASE.md)。
 
@@ -367,10 +384,9 @@ jobs:
             `docker.io/<dockerhub-user>/${{ env.IMAGE_BASENAME }}`。
             部署与升级见 [`docs/DEPLOY.md`](https://github.com/${{ github.repository }}/blob/${{ env.RELEASE_TAG }}/docs/DEPLOY.md)。
 
-            ## 签名与公证
+            ## 签名
 
-            - **macOS**：未配置 Apple 签名 / 公证 secrets 时，`.app` 只有 ad-hoc 签名，
+            - **Windows**：安装包目前未接入代码签名，SmartScreen 可能提示「未知发布者」。
+            - **macOS**（启用打包时）：未配置 Apple 签名 / 公证 secrets 时，`.app` 只有 ad-hoc 签名，
               首次打开需要「右键 → 打开」，或执行
               `xattr -dr com.apple.quarantine /Applications/课程计划.app`。
-            - **Windows**：安装包目前未接入代码签名，SmartScreen 可能提示「未知发布者」。
-            - Linux 产物不做签名（Debian 包仓库签名不在本项目范围内）。

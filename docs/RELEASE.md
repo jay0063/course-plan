@@ -6,12 +6,20 @@
 | 文件 | 作用 |
 | --- | --- |
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | 持续集成：push 到 `master`/`main` 与所有 PR 上跑 fmt / clippy / test |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | 发版：tag `v*` 触发，构建三平台安装包 + 多架构服务端镜像 + 创建 GitHub Release |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | 发版：tag `v*` 触发，构建 Windows 安装包 + 多架构服务端镜像 + 创建 GitHub Release（Linux / macOS 见下方开关） |
 | [`.github/workflows/server.yml`](../.github/workflows/server.yml) | 服务端专项：crates 相关改动时跑服务端测试与 `docker compose` 冒烟 |
 | [`packaging/`](../packaging) | 各平台本地打包脚本（CI 直接调用同一批脚本） |
 | [`docs/DEPLOY.md`](DEPLOY.md) | 服务端镜像的部署 / 升级 / 备份 |
 
 ---
+
+> ### ⚠️ 平台开关（2026-10-19 起）
+>
+> **Linux / macOS 客户端打包暂时停用**：`release.yml` 中 `linux` / `macos` 作业默认
+> `if: false`（由 `workflow_dispatch` 的 `with_linux` / `with_macos` 控制，默认关闭）。
+> 手动触发并勾选对应输入即可产出该平台产物；要恢复「每次发版都打包」，
+> 删除这两个 job 的 `if:` 行并把它们加回 `release` 作业的 `needs:` 即可。
+> 打包脚本（`packaging/linux`、`packaging/macos`）与本文其余内容保持有效。
 
 ## 1. 版本约定
 
