@@ -57,8 +57,13 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequiredOverridesAllowed=dialog
 
 [Languages]
-Name: "chinese"; MessagesFile: "compiler:Default.isl"
-Name: "english"; MessagesFile: "compiler:English.isl"
+; Default.isl 是 Inno 自带的英文消息（可用）；中文消息文件不在 Inno 安装目录内，
+; 由 build-windows.ps1 尝试下载官方仓库的 ChineseSimplified.isl 并通过
+; /DChineseLangDir=<目录> 传入；下载失败时只保留英文界面，构建不会因此失败。
+Name: "english"; MessagesFile: "compiler:Default.isl"
+#ifdef ChineseLangDir
+Name: "chinese"; MessagesFile: "{#ChineseLangDir}\ChineseSimplified.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

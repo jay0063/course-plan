@@ -76,7 +76,26 @@ if (-not $SkipInstaller) {
         Write-Host "==> Building Inno Setup installer"
         # Pass the real version (single source: Cargo.toml) and the resolved
         # executable path (target\<triple>\release) so the .iss cannot drift.
-        & $iscc "/DAppVersion=$version" "/DExePath=$exePath" "packaging\windows\course-plan.iss"
+        $isccArgs = @("/DAppVersion=$version", "/DExePath=$exePath")
+
+        # 可选的中文安装界面：Inno 安装目录里没有中文消息文件，从官方仓库取一份；
+        # 失败只告警（安装器退回英文界面），绝不让打包失败。
+        $islDir = Join-Path $env:TEMP "courseplan-isl"
+        try {
+            New-Item -ItemType Directory -Force -Path $islDir | Out-Null
+            $islPath = Join-Path $islDir "ChineseSimplified.isl"
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 `
+                -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" `
+                -OutFile $islPath
+            if (Test-Path $islPath) {
+                $isccArgs += "/DChineseLangDir=$islDir"
+                Write-Host "    zh-CN 语言文件已就绪"
+            }
+        } catch {
+            Write-Warning "无法获取中文语言文件，安装器将只有英文界面：$($_.Exception.Message)"
+        }
+
+        & $iscc @isccArgs "packaging\windows\course-plan.iss"
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
     } else {
         Write-Warning "ISCC.exe not found; skipping the installer."

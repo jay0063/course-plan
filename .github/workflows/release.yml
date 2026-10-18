@@ -82,10 +82,16 @@ jobs:
           curl -sSL -o /tmp/appimagetool \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool
-          # ubuntu-24.04 上 FUSE2 的包名是 libfuse2t64（libfuse2 已不存在）。
-          sudo apt-get install -y libfuse2t64 libgpgme11 || sudo apt-get install -y libfuse2 libgpgme11
-          /tmp/appimagetool --appimage-extract > /dev/null
-          sudo install -m 0755 squashfs-root/AppRun /usr/local/bin/appimagetool
+          # appimagetool 自带的 AppRun 依赖 AppImage 内部目录结构；单独拷贝到
+          # /usr/local/bin 会以 `exec: : Permission denied` 失败。改为包装脚本 +
+          # APPIMAGE_EXTRACT_AND_RUN=1（自解压运行，无需 FUSE）。
+          sudo tee /usr/local/bin/appimagetool > /dev/null <<'EOF'
+          #!/bin/sh
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          exec /tmp/appimagetool "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/appimagetool
+          appimagetool --version
           ./packaging/linux/build-appimage.sh
       - uses: actions/upload-artifact@v4
         with:
