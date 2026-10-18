@@ -320,12 +320,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
+      # 只下载真正的发布产物：buildx 的 gha 缓存会额外上传一个
+      # `*~*.dockerbuild` 工件，merge-multiple 全量下载时会解包失败。
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
+          pattern: "{linux-packages,windows-installer,macos-*}"
       - name: List collected assets
         run: ls -lh release-assets
       - name: Publish release
