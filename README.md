@@ -205,11 +205,19 @@ ARCH=x86_64  ./packaging/macos/build-macos.sh   # Intel
 产物：`.app` 包、`.dmg`、以及供公证用的 `.app.tar.gz`。
 设置 `SIGN_IDENTITY` 与 `NOTARY_PROFILE` 环境变量即可完成签名与公证。
 
-### CI
+### CI / 发布
 
-`.github/workflows/release.yml` 用 GitHub Actions 的 matrix 同时构建
-Linux / Windows / macOS(arm64 + x86_64)，推 tag 即发布；
-`.github/workflows/server.yml` 负责服务端镜像的构建与检查。
+* **CI**：`.github/workflows/ci.yml` 在 push 到 `master`/`main` 与所有 PR 上跑
+  `fmt` / `clippy` / `test`；`.github/workflows/server.yml` 负责服务端的测试与
+  `docker compose` 冒烟。
+* **发布**：推送 **`vX.Y.Z`** 形式的 tag（如 `git tag v0.1.0 && git push origin v0.1.0`）
+  即触发 `.github/workflows/release.yml`——它构建 Linux / Windows / macOS(arm64 +
+  x86_64) 安装包、推送多架构（amd64 + arm64）服务端镜像到
+  `ghcr.io/<owner>/course-plan-server`，并创建 GitHub Release。
+  **tag 必须与 `Cargo.toml` 的 `version` 完全一致**（workflow 里有版本守卫）。
+
+完整的发版手册（步骤、Secrets、镜像标签规则、回滚）见
+[`docs/RELEASE.md`](docs/RELEASE.md)。
 
 ---
 

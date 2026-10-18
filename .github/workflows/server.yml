@@ -38,13 +38,11 @@ jobs:
       - name: Clippy
         run: cargo clippy -p course-plan-server --all-targets --locked -- -D warnings
 
-  image:
-    name: Docker image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -f crates/server/Dockerfile -t courseplan-server:ci .
+  # 说明：这里不再保留独立的 "Docker image" 构建 job。
+  # 它只是 `docker build -f crates/server/Dockerfile .`，而下面的 compose smoke job
+  # 用完全相同的 context/file（docker-compose.yml: context: . / dockerfile:
+  # crates/server/Dockerfile）执行 `docker compose up -d --build` + 健康检查，
+  # 覆盖面严格更强；发布侧的镜像由 release.yml 的 buildx job（amd64+arm64，带缓存）验证。
 
   compose:
     name: Compose smoke

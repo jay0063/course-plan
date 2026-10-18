@@ -4,13 +4,25 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.1.0），必须已存在且指向要发布的提交"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
+  # tag 推送时用 ref（即 tag 本身）；手动触发时用 inputs.tag。
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  REGISTRY: ghcr.io
+  IMAGE_BASENAME: course-plan-server
+
+permissions:
+  contents: read
 
 jobs:
   checks:
-    name: Lint and build
+    name: Lint and version guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,10 +37,28 @@ jobs:
             build-essential clang cmake pkg-config libfontconfig-dev \
             libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev \
             libzstd-dev libasound2-dev libvulkan1
+      # 版本守卫：tag（去掉前导 v）必须与 workspace 根包 Cargo.toml 的 version 完全一致。
+      # 这是唯一的版本真源，平台脚本也从同一个字段读取版本号。
+      - name: Version guard (tag == Cargo.toml)
+        run: |
+          set -euo pipefail
+          tag_version="${RELEASE_TAG#v}"
+          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "release ref : ${RELEASE_TAG}"
+          echo "tag version : ${tag_version}"
+          echo "Cargo.toml  : ${manifest_version}"
+          if [ -z "$tag_version" ]; then
+            echo "::error::无法从 '${RELEASE_TAG}' 解析版本号"
+            exit 1
+          fi
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::tag v${tag_version} 与 Cargo.toml 版本 ${manifest_version} 不一致；请先 bump 版本再打 tag"
+            exit 1
+          fi
       - name: Format
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   linux:
     name: Linux packages
@@ -85,6 +115,7 @@ jobs:
   macos:
     name: macOS app (${{ matrix.arch }})
     needs: checks
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +124,16 @@ jobs:
             runner: macos-14
           - arch: x86_64
             runner: macos-13
-    runs-on: ${{ matrix.runner }}
+    # secrets 不能出现在 if: 里，先映射到 job env，再用 env.* 判断。
+    # 缺 Apple secrets 时所有签名/公证步骤都会跳过，脚本退回 ad-hoc 签名，
+    # 未签名的构建同样可以成功产出产物。
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -102,15 +142,222 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.arch }}
-      - run: cargo build --release --locked --target ${{ matrix.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
-      - name: Build bundle
+
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          echo "==> Creating temporary keychain"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "==> Importing certificate"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$CERT_PATH"
+
+          # 让 codesign 无需交互就能取用私钥。
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+
+          echo "==> Prepending keychain to the search list"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          security find-identity -v -p codesigning
+
+      # APPLE_SIGN_IDENTITY 可选：不填则从刚导入的证书里自动解析。
+      - name: Resolve signing identity
+        id: signing
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          set -euo pipefail
+          if [ -n "${APPLE_SIGN_IDENTITY}" ]; then
+            identity="$APPLE_SIGN_IDENTITY"
+          else
+            identity="$(security find-identity -v -p codesigning \
+              | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+          fi
+          if [ -z "$identity" ]; then
+            echo "::error::钥匙串里没有可用的 Developer ID Application 证书"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "==> Signing as: $identity"
+
+      # 公证凭据只在 Apple ID secrets 齐全时写入；否则 NOTARY_PROFILE 为空，
+      # build-macos.sh 只签名、不公证。
+      - name: Store notarytool credentials
+        id: notary
+        if: >-
+          env.APPLE_CERTIFICATE_P12 != '' && env.APPLE_ID != '' &&
+          env.APPLE_TEAM_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != ''
         env:
-          SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-          NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+          NOTARY_PROFILE: courseplan-notary
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --keychain "$RUNNER_TEMP/signing.keychain-db" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"
+          echo "profile=$NOTARY_PROFILE" >> "$GITHUB_OUTPUT"
+
+      - name: Build bundle (sign + notarize when configured)
+        env:
+          ARCH: ${{ matrix.arch }}
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_PROFILE: ${{ steps.notary.outputs.profile }}
         run: ./packaging/macos/build-macos.sh
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
           path: |
             dist/*.dmg
             dist/*.app.tar.gz
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+  server-image:
+    name: Server image (ghcr.io)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # 可选的 Docker Hub 镜像：两个 secret 都存在时才加入推送目标。
+      - name: Resolve image names
+        id: images
+        run: |
+          set -euo pipefail
+          images="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${IMAGE_BASENAME}"
+          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            images="$images"$'\n'"docker.io/${DOCKERHUB_USERNAME}/${IMAGE_BASENAME}"
+          fi
+          {
+            echo "images<<IMAGE_LIST_EOF"
+            echo "$images"
+            echo "IMAGE_LIST_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "$images"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.images }}
+          flavor: |
+            latest=false
+          # 显式给出 value，使标签只由发布 tag 决定：
+          # workflow_dispatch 在分支上手动触发时 github.ref 不是 tag，
+          # 若依赖 ref 推导会拿不到任何标签。
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
+            type=raw,value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Publish GitHub Release
+    needs: [checks, linux, windows, macos, server-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: List collected assets
+        run: ls -lh release-assets
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: release-assets/**
+          body: |
+            ## 安装包
+
+            | 资产 | 平台 | 说明 |
+            | --- | --- | --- |
+            | `course-plan_<version>_amd64.deb` | Linux x86_64 | Debian / Ubuntu 安装包：`sudo apt install ./course-plan_<version>_amd64.deb` |
+            | `course-plan-<version>-x86_64.AppImage` | Linux x86_64 | 免安装单文件：`chmod +x` 后直接运行（需要 FUSE2，或 `--appimage-extract`） |
+            | `course-plan-<version>-amd64.tar.gz` | Linux x86_64 | 便携版 tar.gz，解压即用 |
+            | `CoursePlan-Setup-<version>.exe` | Windows 10/11 x64 | Inno Setup 安装包（开始菜单/桌面快捷方式 + 卸载项） |
+            | `CoursePlan-<version>-windows-x64.zip` | Windows 10/11 x64 | 便携版，解压即用；需「Microsoft Visual C++ 2015-2022 Redistributable (x64)」 |
+            | `课程计划-<version>-macos-aarch64.dmg` | macOS 11+ Apple Silicon | 拖入「应用程序」安装 |
+            | `课程计划-<version>-macos-x86_64.dmg` | macOS 11+ Intel | 拖入「应用程序」安装 |
+            | `课程计划-<version>-macos-<arch>.app.tar.gz` | macOS | `.app` 归档，用于公证校验 / 手动分发 |
+
+            各平台的使用与排障见 [`docs/RELEASE.md`](https://github.com/${{ github.repository }}/blob/${{ env.RELEASE_TAG }}/docs/RELEASE.md)。
+
+            ## 服务端容器镜像
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_BASENAME }}:${{ env.RELEASE_TAG }}
+            ```
+
+            多架构（`linux/amd64` + `linux/arm64`）单 manifest 推送，
+            标签规则：`${{ env.RELEASE_TAG }}`（tag 原文）、`X.Y`、`latest`。
+            若维护者配置了 Docker Hub secrets，同一批标签也会推送到
+            `docker.io/<dockerhub-user>/${{ env.IMAGE_BASENAME }}`。
+            部署与升级见 [`docs/DEPLOY.md`](https://github.com/${{ github.repository }}/blob/${{ env.RELEASE_TAG }}/docs/DEPLOY.md)。
+
+            ## 签名与公证
+
+            - **macOS**：未配置 Apple 签名 / 公证 secrets 时，`.app` 只有 ad-hoc 签名，
+              首次打开需要「右键 → 打开」，或执行
+              `xattr -dr com.apple.quarantine /Applications/课程计划.app`。
+            - **Windows**：安装包目前未接入代码签名，SmartScreen 可能提示「未知发布者」。
+            - Linux 产物不做签名（Debian 包仓库签名不在本项目范围内）。
