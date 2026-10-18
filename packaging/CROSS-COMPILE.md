@@ -25,24 +25,127 @@ GPUI 的底层图形栈（Vulkan / Metal / D3D12）在不同平台差异很大�
 
 ## 2. 各平台环境准备
 
-### 2.1 Windows 11
+### 2.1 Windows 10 1809+ / Windows 11 (x64)
+
+#### 环境准备
 
 ```powershell
-# 1. 安装 Rust（MSVC 工具链，不要用 GNU 版）
+# 1. Rust（MSVC 工具链，不要用 GNU 版）
 winget install Rustlang.Rustup
 rustup default stable-x86_64-pc-windows-msvc
 rustup target add x86_64-pc-windows-msvc
 
-# 2. 安装 Visual Studio 2022 Build Tools（勾选“使用 C++ 的桌面开发”）
+# 2. Visual Studio 2022 Build Tools（勾选“使用 C++ 的桌面开发”/ VCTools 工作负载）
 winget install Microsoft.VisualStudio.2022.BuildTools `
   --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 
-# 3. 构建 + 打包
-cargo build --release --locked
-pwsh -File packaging\windows\build-windows.ps1
+# 3. Inno Setup 6（生成安装包）
+winget install JRSoftware.InnoSetup
 ```
 
-CMake 需要在 `PATH` 上（部分依赖用它找原生库）。
+* **CMake** 必须能在 `PATH` 上找到（部分依赖用它定位原生库）。
+* **显卡 / 驱动**：GPUI 在 Windows 上走 Direct3D 12（wgpu），需要支持 D3D12 的
+  显卡与较新的驱动。**不依赖 WebView2**，也不依赖任何系统 WebView。
+* 仓库是 Cargo workspace，**根包就是客户端**（`src/`）。在仓库根执行
+  `cargo build --release --locked` 只构建客户端；服务端是 `crates/server`，不参与桌面打包。
+
+#### 构建与打包
+
+```powershell
+# 默认：x86_64-pc-windows-msvc + 动态 CRT + 便携 zip + 安装包
+pwsh -File packaging\windows\build-windows.ps1
+
+# 只要便携 zip，不生成安装包（也不要求装 Inno Setup）
+pwsh -File packaging\windows\build-windows.ps1 -SkipInstaller
+
+# 静态 CRT：便携包不再依赖 VC++ 运行库（见下）
+pwsh -File packaging\windows\build-windows.ps1 -StaticCrt
+
+# 指定目标 triple（默认 x86_64-pc-windows-msvc）
+pwsh -File packaging\windows\build-windows.ps1 -Target aarch64-pc-windows-msvc
+```
+
+脚本自身会执行 `cargo build --release --locked --target <triple>`。因为带了
+`--target`，二进制落在 `target\<triple>\release\course-plan.exe`；脚本会自动识别
+该路径，并以 `/DExePath=...` 的完整路径传给 Inno Setup（`.iss` 里不再硬编码
+`target\release\`）。版本号从 `Cargo.toml` 读取，以 `/DAppVersion=...` 传入，因此
+不会与 `Cargo.toml` 漂移（`.iss` 里的默认值只用于直接运行 ISCC 的场景）。
+
+产物落在**仓库根**的 `dist\`：
+
+| 产物 | 说明 |
+| --- | --- |
+| `dist\CoursePlan-<version>-windows-x64.zip` | 便携版，解压即用 |
+| `dist\CoursePlan-Setup-<version>.exe` | Inno Setup 安装包（开始菜单 / 桌面快捷方式 / 卸载项） |
+
+手动运行 ISCC（不经脚本）时，请显式传入版本与 exe 路径：
+
+```powershell
+ISCC.exe /DAppVersion=0.1.0 `
+         /DExePath=target\x86_64-pc-windows-msvc\release\course-plan.exe `
+         packaging\windows\course-plan.iss
+```
+
+> `.iss` 用 `SourceDir=..\..` 把相对路径锚定在仓库根（脚本位于
+> `packaging\windows\`），所以 `OutputDir=dist`、`SetupIconFile=packaging\icons\...`、
+> `README.md` 都相对仓库根解析，而不是相对脚本目录。
+
+#### VC++ 运行库
+
+默认（**动态 CRT**）下，目标机器必须安装
+**「Microsoft Visual C++ 2015-2022 Redistributable (x64)」**，否则程序启动即报缺少
+`VCRUNTIME140.dll` / `MSVCP140.dll`。两种做法二选一：
+
+* **随包安装**：在安装包里附带 `vc_redist.x64.exe`，并用 Inno 的 `[Run]` 段静默安装；
+  便携版则在说明里提示用户自行安装。
+* **静态链接**：用 `-StaticCrt` 构建（在 `cargo build` 前设置
+  `RUSTFLAGS="-C target-feature=+crt-static"`，脚本已封装）。CRT 被链进 exe，
+  便携包在干净的 Windows 上可直接运行，代价是体积略大。
+
+#### 代码签名（可选，但强烈推荐）
+
+未签名的 exe 会触发 SmartScreen「未知发布者」警告。发布前建议先用 `signtool` 签
+exe（**在 ISCC 之前**），再签安装包：
+
+```powershell
+signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 `
+  /f cert.pfx /p "<password>" `
+  target\x86_64-pc-windows-msvc\release\course-plan.exe
+```
+
+再在 `course-plan.iss` 的 `[Setup]` 里配置 Inno 的签名指令，使安装包与卸载器也被签名：
+
+```ini
+SignTool=signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f cert.pfx
+SignedUninstaller=yes
+```
+
+证书（`.pfx`）与密码**不要**提交进仓库；CI 里通过 Secrets 注入（例如把证书
+base64 存进 secret，构建时解码到临时文件）。未签名构建仍可运行，但会触发 SmartScreen。
+
+#### 同步与 TLS 的注意事项
+
+客户端用 `reqwest` 且启用 `rustls-tls`（内置 Mozilla 根证书 + 纯 Rust TLS，
+不依赖系统 OpenSSL）。这意味着 **私有 / 自签名 CA 一律无法通过校验**——例如局域网里
+Caddy 用 `internal` CA 签发的证书会握手失败。两条出路：
+
+* 用公有 CA：Caddy 绑定真实域名自动申请 Let's Encrypt 证书（推荐）；
+* 或给 `Cargo.toml` 的 `reqwest` 增加 `rustls-tls-native-roots` feature，让客户端改用
+  Windows 证书存储里的根证书。**这需要在 `Cargo.toml` 改依赖，本文档仅作说明。**
+
+#### Windows 侧冒烟清单
+
+在干净的 Windows 10/11 x64 机器上：
+
+1. 用便携包解压启动（或安装包安装后启动），**8 个页面**逐个切换不崩溃；
+2. 「课程管理」新建一门课程并保存；
+3. 确认数据文件出现在
+   `%APPDATA%\courseplan\CoursePlan\data\course-plan\data.json`
+   （**Roaming** AppData，而非 LocalAppData）；
+4. 设置页切换浅色 / 深色主题正常；
+5. （可选）用 `docker compose` 拉起服务端，在「设置 → 同步」里登录并确认多设备收敛；
+6. **卸载应用 → 数据文件仍在**（安装包不删除用户数据）；
+7. 如需彻底清除，手动删除整个 `%APPDATA%\courseplan` 目录。
 
 ### 2.2 macOS 11+
 
@@ -130,13 +233,13 @@ cargo build --release --locked
 
 * Linux 打包脚本读取它写入 `control` / AppImage 元数据；
 * `Info.plist` 在构建时用 `PlistBuddy` 同步；
-* Inno Setup 用 `#define AppVersion "0.1.0"`，**发布前记得同步**，
-  或改为从文件读取。
+* Windows：`build-windows.ps1` 读取它并以 `/DAppVersion` 传给 Inno Setup，
+  **无需再手工同步**（`.iss` 里的 `#ifndef` 默认值只用于直接运行 ISCC 的场景）。
 
 发版前检查清单：
 
 1. `cargo build --release --locked` 通过；
 2. `cargo clippy --all-targets -- -D warnings` 通过；
-3. 更新 `packaging/windows/course-plan.iss` 的 `AppVersion`；
+3. 确认 `Cargo.toml` 的 `version` 已 bump（各平台打包脚本都从这里读取）；
 4. 更新 `packaging/macos/course-plan.metainfo.xml`（若存在）与 AppImage 元数据的 release 条目；
-5. 在干净机器上安装并运行产物，验证升级与卸载。
+5. 在干净机器上安装并运行产物，验证升级、卸载**保留用户数据**，以及重装不丢数据。

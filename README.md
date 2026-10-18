@@ -175,18 +175,25 @@ sudo apt install ./dist/course-plan_0.1.0_amd64.deb
 再补上 Vulkan 与图形栈。`.deb` 会注册桌面菜单项和图标，`sudo apt remove course-plan`
 可以干净卸载。
 
-### Windows 11
+### Windows 11（也支持 Windows 10 1809+）
 
 ```powershell
 cargo build --release --locked
-pwsh -File packaging\windows\build-windows.ps1
+pwsh -File packaging\windows\build-windows.ps1                 # 便携 zip + 安装包
+pwsh -File packaging\windows\build-windows.ps1 -SkipInstaller  # 只要便携 zip
+pwsh -File packaging\windows\build-windows.ps1 -StaticCrt      # 免 VC++ 运行库
 ```
 
 需要 **MSVC 工具链**（不是 GNU）、Visual Studio 2022 Build Tools 的
-“使用 C++ 的桌面开发”工作负载，以及 Inno Setup 6。产物：
+“使用 C++ 的桌面开发”工作负载，以及 Inno Setup 6。默认（动态 CRT）产物在目标机器上
+需要「Microsoft Visual C++ 2015-2022 Redistributable (x64)」；加 `-StaticCrt` 可把
+运行库静态链接进 exe，便携包在干净的 Windows 上也能直接运行。产物：
 
 * `dist\CoursePlan-<version>-windows-x64.zip` — 便携版，解压即用
 * `dist\CoursePlan-Setup-<version>.exe` — 安装包，带开始菜单/桌面快捷方式与卸载项
+
+完整的环境准备、VC++ 运行库、代码签名、TLS 与冒烟清单见
+[`packaging/CROSS-COMPILE.md`](packaging/CROSS-COMPILE.md)。
 
 ### macOS 11+（Intel 与 Apple Silicon）
 
