@@ -7,6 +7,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # GPUI + wgpu 的 debug 测试二进制极大；在 runner 上并行链接会把 lld 打到 SIGBUS
+  # （collect2: fatal error: ld terminated with signal 7 [Bus error]）。
+  # 关闭 debuginfo 并把并行度降到 2，显著降低峰值内存。
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   client:

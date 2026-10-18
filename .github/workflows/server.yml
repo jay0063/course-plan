@@ -47,11 +47,13 @@ jobs:
   compose:
     name: Compose smoke
     runs-on: ubuntu-latest
+    # JWT_SECRET 必须在此层设置：compose 的 ${JWT_SECRET:?} 在 up/down 等所有子命令上
+    # 都会做插值校验，只给某一步设置 env 会让 `Compose down` 失败。
+    env:
+      JWT_SECRET: ci-only-secret-not-for-production
     steps:
       - uses: actions/checkout@v4
       - name: Compose up + health
-        env:
-          JWT_SECRET: ci-only-secret-not-for-production
         run: |
           docker compose up -d --build
           for i in $(seq 1 60); do

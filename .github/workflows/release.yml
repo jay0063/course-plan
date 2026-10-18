@@ -82,7 +82,8 @@ jobs:
           curl -sSL -o /tmp/appimagetool \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool
-          sudo apt-get install -y libfuse2 libgpgme11
+          # ubuntu-24.04 上 FUSE2 的包名是 libfuse2t64（libfuse2 已不存在）。
+          sudo apt-get install -y libfuse2t64 libgpgme11 || sudo apt-get install -y libfuse2 libgpgme11
           /tmp/appimagetool --appimage-extract > /dev/null
           sudo install -m 0755 squashfs-root/AppRun /usr/local/bin/appimagetool
           ./packaging/linux/build-appimage.sh
@@ -120,10 +121,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macos-13 已于 2025-12 退役；macos-14 在 2026-10 处于退役灰测（作业会失败）。
+          # Intel 构建用 macos-15-intel（GitHub 当前唯一的 Intel 镜像），arm64 用 macos-15。
           - arch: aarch64
-            runner: macos-14
+            runner: macos-15
           - arch: x86_64
-            runner: macos-13
+            runner: macos-15-intel
     # secrets 不能出现在 if: 里，先映射到 job env，再用 env.* 判断。
     # 缺 Apple secrets 时所有签名/公证步骤都会跳过，脚本退回 ad-hoc 签名，
     # 未签名的构建同样可以成功产出产物。
