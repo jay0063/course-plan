@@ -95,7 +95,8 @@ COURSEPLAN_VISUAL=1 cargo test --test render
 
 需要一台可长期运行的 Linux 主机（VPS / NAS / 家用服务器均可），
 安装 Docker Engine ≥ 24 与 Docker Compose v2。完整指南见
-[`docs/DEPLOY.md`](docs/DEPLOY.md)，这里是最短路径：
+[`docs/DEPLOY.md`](docs/DEPLOY.md)（含「部署自检」清单），这里是最短路径：
+> 若当前用户不在 `docker` 组，请给下面的命令加 `sudo`，或先执行 `sudo usermod -aG docker $USER` 并重新登录。
 
 ```bash
 # 1) 准备环境变量：复制模板，填入随机 JWT_SECRET（必填，缺失时服务端启动失败）

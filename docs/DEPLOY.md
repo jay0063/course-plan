@@ -9,6 +9,8 @@
 
 - 一台可长期运行的 Linux 主机（VPS / NAS / 家用服务器均可）
 - Docker Engine ≥ 24 与 Docker Compose v2（`docker compose version` 有输出即可）
+- **容器运行时权限**：当前用户需能访问 Docker 守护进程。若不在 `docker` 组，请在命令前加 `sudo`，
+  或执行 `sudo usermod -aG docker $USER` 后重新登录（本仓库文档中的命令均按不加 `sudo` 书写）
 - 若启用 TLS：一个已解析到本机的域名，并放通 80/443 端口
 
 ## 2. 快速开始
@@ -31,6 +33,39 @@ curl -fsS http://127.0.0.1:8080/api/health
 ```
 
 客户端在「设置 → 同步」中填写 `服务器地址`（如 `http://<主机>:8080`）即可注册/登录。
+
+### 2.1 部署自检（建议首次上线逐项执行）
+
+以下清单已在开发机（Docker 26.1.5 + Compose v2）上实机验证通过，可直接照抄：
+
+```bash
+# 1) 健康检查
+curl -fsS http://127.0.0.1:8080/api/health
+
+# 2) 注册 → 推送 → 拉取 往返（应分别返回 applied 与 changes）
+TOKEN=$(curl -fsS -X POST http://127.0.0.1:8080/api/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"username":"selfcheck","password":"selfcheck-pass-123"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+NOW=$(date +%s%3N)
+curl -fsS -X POST http://127.0.0.1:8080/api/sync/push \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d "{\"changes\":[{\"kind\":\"memo\",\"id\":\"selfcheck-1\",\"updated_at\":$NOW,\"deleted\":false,\"device_id\":\"cli\",\"payload\":{\"id\":\"selfcheck-1\"}}]}"
+curl -fsS "http://127.0.0.1:8080/api/sync/pull?since=0" -H "authorization: Bearer $TOKEN"
+
+# 3) 重启后数据仍在（卷持久化）
+docker compose restart && sleep 3
+curl -fsS "http://127.0.0.1:8080/api/sync/pull?since=0" -H "authorization: Bearer $TOKEN"
+
+# 4) 备份演练（方法 A：容器内 .backup，WAL 安全）
+docker compose exec server sh -c 'sqlite3 /data/courseplan.db ".backup /data/courseplan-selfcheck.db"'
+docker compose exec server sh -c 'sqlite3 /data/courseplan-selfcheck.db "pragma integrity_check; select count(*) from entities;"'
+
+# 5) 清理（会删除卷内数据，演练环境专用）
+docker compose down -v
+```
+
+> 仓库内还带一条端到端测试：`COURSEPLAN_TEST_SERVER=http://127.0.0.1:8080 cargo test --test sync_e2e mode2_external_server_roundtrip`
+> （用真实客户端引擎对已部署服务端做注册/推送/拉取断言；`scripts/e2e-server.sh` 可一键对 release 二进制跑同样的检查）。
 
 ## 3. 环境变量
 
