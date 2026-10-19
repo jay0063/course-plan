@@ -33,10 +33,14 @@ RUN mkdir -p src crates/sync-proto/src crates/server/src \
     && printf 'fn main() {}\n' > crates/server/src/main.rs \
     && cargo build --release --locked -p course-plan-server
 
-# 复制真实工作区源码。COPY 后统一 touch，避免构建缓存因 mtime 判定源码未变。
-COPY . .
+# 只复制服务端真正需要的源码（crates/ 含迁移脚本）。
+# 之前这里是 `COPY . .`：客户端/src、docs 等任何改动都会击穿这一层，
+# 让「只改了客户端」的发版也重新编译服务端 crate。现在上下文只剩 crates/ 与清单，
+# 客户端改动完全不会碰到这个镜像。
+COPY crates/ crates/
 
-RUN find src crates -name '*.rs' -exec touch {} + \
+# COPY 后统一刷新 mtime，避免构建缓存误判源码未变。
+RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked -p course-plan-server
 
 # ---------------------------------------------------------------------------

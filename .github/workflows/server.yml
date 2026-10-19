@@ -2,6 +2,9 @@ name: server
 
 on:
   push:
+    # 只在分支上跑：tag 推送由 release.yml 负责（它会做同样的校验 + 产物），
+    # 否则一次发版会把服务端测试与 compose 冒烟重复跑两遍。
+    branches: [master, main]
     paths:
       - "crates/**"
       - "Cargo.toml"
@@ -9,6 +12,7 @@ on:
       - ".dockerignore"
       - "docker-compose.yml"
       - "docker-compose.tls.yml"
+      - "scripts/server-changed.sh"
       - ".github/workflows/server.yml"
   pull_request:
     paths:
@@ -18,14 +22,38 @@ on:
       - ".dockerignore"
       - "docker-compose.yml"
       - "docker-compose.tls.yml"
+      - "scripts/server-changed.sh"
       - ".github/workflows/server.yml"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 路径过滤只能看「哪些文件被碰过」；发布时三个 workspace 包会一起 bump 版本，
+  # 那会让 crates/*/Cargo.toml 命中，于是纯客户端改动也会触发服务端构建。
+  # 这里用 scripts/server-changed.sh 再判一次：只有「版本号以外的行」变动才算真变更。
+  changes:
+    name: Detect server changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要历史来 diff 基准提交
+      - name: Detect
+        id: detect
+        env:
+          BASE: ${{ github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # base 为全零（新建分支）或为空时，脚本会自动保守判为「有变更」。
+          bash scripts/server-changed.sh "${BASE:-}" HEAD
+
   test:
     name: Test & lint
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +74,8 @@ jobs:
 
   compose:
     name: Compose smoke
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     # JWT_SECRET 必须在此层设置：compose 的 ${JWT_SECRET:?} 在 up/down 等所有子命令上
     # 都会做插值校验，只给某一步设置 env 会让 `Compose down` 失败。

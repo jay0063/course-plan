@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      with_server_image:
+        description: "强制重建服务端镜像（默认 auto：仅当服务端输入自上一个 tag 起有改动时才构建）"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,8 +39,14 @@ jobs:
   checks:
     name: Lint and version guard
     runs-on: ubuntu-latest
+    outputs:
+      # 服务端输入自上一个 tag 起是否有改动（供 server-image 决定是否构建）。
+      server_changed: ${{ steps.server_changed.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要完整 tag 历史来定位「上一个 tag」
+          fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -69,6 +80,36 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # 服务端镜像是否真的需要重建：与上一个 tag 比对服务端输入。
+      # 只改客户端时这里输出 false，server-image 整个 job 直接跳过（省约 20 分钟）。
+      - name: Detect server changes since previous tag
+        id: server_changed
+        run: |
+          set -euo pipefail
+          current="$(git rev-parse HEAD)"
+          # 按版本号倒序找上一个 tag（排除当前正在发布的这个）。
+          prev=""
+          while IFS= read -r candidate; do
+            [[ -z "$candidate" ]] && continue
+            [[ "$candidate" == "${RELEASE_TAG}" ]] && continue
+            prev="$candidate"
+            break
+          done < <(git tag --sort=-v:refname --merged HEAD 'v*')
+          if [[ -z "$prev" ]]; then
+            echo "没有上一个 tag → 保守构建服务端镜像"
+            bash scripts/server-changed.sh "" "$current"
+            exit 0
+          fi
+          prev_sha="$(git rev-list -n1 "$prev")"
+          echo "previous tag: ${prev} (${prev_sha})"
+          if [[ "$prev_sha" == "$current" ]]; then
+            echo "同一提交（tag 重指）→ 服务端无变化"
+            if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+              echo "changed=false" >>"$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          bash scripts/server-changed.sh "$prev_sha" "$current"
 
   # 暂时停用（2026-10-19，用户要求）：默认不打包 Linux。
   # 需要时手动触发 workflow_dispatch 并勾选 with_linux；
@@ -259,8 +300,16 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
+  # 服务端镜像：一次冷启动的多架构构建约 20 分钟（arm64 走 QEMU 模拟），
+  # 而多数发版只改客户端。所以先与「上一个 tag」比对服务端输入，没有改动就跳过；
+  # 纯版本号 bump 不算改动（见 scripts/server-changed.sh）。
+  # 需要强制重建时：workflow_dispatch 勾 with_server_image。
   server-image:
     name: Server image (ghcr.io)
+    needs: checks
+    if: >-
+      needs.checks.result == 'success' &&
+      (inputs.with_server_image || needs.checks.outputs.server_changed == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -329,13 +378,22 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # 显式 scope：gha 缓存默认按 ref 隔离，而发版都在不同 tag 上跑，
+          # 不指定 scope 就等于每次发版都冷启动（实测 24 分钟 → 40 秒）。
+          cache-from: type=gha,scope=server-image
+          cache-to: type=gha,mode=max,scope=server-image
 
   release:
     name: Publish GitHub Release
     # 只依赖仍然启用的作业：若 needs 里含被 if 跳过的 job，GitHub 会把本作业一起跳过。
+    # 因此这里用 `!cancelled()` + 逐个判断 result：server-image 被「无改动」跳过时
+    # 仍要发布客户端产物（它被 skipped 不算失败）。
     needs: [checks, windows, server-image]
+    if: >-
+      !cancelled() &&
+      needs.checks.result == 'success' &&
+      needs.windows.result == 'success' &&
+      (needs.server-image.result == 'success' || needs.server-image.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -382,6 +440,10 @@ jobs:
             标签规则：`${{ env.RELEASE_TAG }}`（tag 原文）、`X.Y`、`latest`。
             若维护者配置了 Docker Hub secrets，同一批标签也会推送到
             `docker.io/<dockerhub-user>/${{ env.IMAGE_BASENAME }}`。
+
+            > 镜像只在**服务端输入自上一个版本起有改动**时重建（纯客户端发版会跳过该作业，
+            > 约省 20 分钟）；跳过时上述标签仍指向上一版镜像，服务端行为不变。
+            > 需要强制重建：手动触发 release 工作流并勾选 `with_server_image`。
             部署与升级见 [`docs/DEPLOY.md`](https://github.com/${{ github.repository }}/blob/${{ env.RELEASE_TAG }}/docs/DEPLOY.md)。
 
             ## 签名

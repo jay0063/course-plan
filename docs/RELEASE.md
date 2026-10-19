@@ -176,7 +176,31 @@ GitHub 会把自定义正文放在前面、自动变更日志接在后面。
 `docker/setup-qemu-action@v3` + `docker/setup-buildx-action@v3` 之后由
 `docker/build-push-action@v6` 以 `platforms: linux/amd64,linux/arm64` 一次构建推送
 （构建上下文 `context: .`，Dockerfile `crates/server/Dockerfile`）。
-ARM 层通过 QEMU 模拟构建，因此 `server-image` job 会比纯 amd64 构建慢一些。
+ARM 层通过 QEMU 模拟构建，因此 `server-image` job 会比纯 amd64 构建慢一些
+（冷缓存实测约 **24 分钟**，热缓存约 40 秒）。
+
+### 什么时候会重建镜像（增量策略）
+
+`release.yml` 的 `checks` 作业会用 `scripts/server-changed.sh` 与**上一个 tag**
+比对服务端输入，结果决定 `server-image` 是否运行：
+
+| 上次发版以来的改动 | 是否重建镜像 |
+| --- | --- |
+| `crates/server/**`、`crates/sync-proto/**` | 重建 |
+| `.dockerignore`、`docker-compose*.yml` | 重建 |
+| `Cargo.toml` / `Cargo.lock` 里的依赖增减 | 重建 |
+| **只有 `version = "x.y.z"` 的 bump** | 跳过（发版必然 bump，不算变更） |
+| 只改客户端 `src/**`、文档、工作流 | 跳过 |
+| 没有上一个 tag（首次发布） | 重建（保守） |
+| 手动勾选 `with_server_image` | 强制重建 |
+
+跳过时 `server-image` 显示为 skipped，GitHub Release 仍会正常发布（`release`
+作业对 skipped 做了放行），镜像标签继续指向上一版——**服务端行为未变**，所以是安全的。
+同时 `server.yml` 也不再在 tag 推送时重复跑一遍服务端测试（只在 `main`/PR 上跑），
+避免一次发版把同一套校验跑两遍。
+
+> 冷缓存时先看 `.dockerignore`：`COPY crates/ crates/` 只带服务端源码，
+> 所以客户端改动连构建层都不会击穿（本地实测：只改客户端后整镜像构建 **1.8 秒**全缓存）。
 
 `docker pull` 时 Docker 会自动挑当前架构对应的层；`docker inspect` 若显示
 `Architecture: unknown/arm64,amd64` 说明拿到的是 manifest list，属正常现象。
@@ -227,6 +251,10 @@ CI 就能跑出来**（差别只在系统依赖清单与环境变量）。
 | `server-image` | `docker buildx build --platform linux/amd64,linux/arm64 -f crates/server/Dockerfile .` | `docker buildx build --platform linux/amd64,linux/arm64 -t courseplan-server:dev --load .`（本机多架构查看用 `imagetools inspect`） |
 | `server` / `test` | `cargo test -p course-plan-server --locked`；`cargo clippy -p course-plan-server --all-targets --locked -- -D warnings` | 同左 |
 | `server` / `compose` | `docker compose up -d --build` + `curl /api/health` 轮询 60×2s | 同左，见 §5 |
+
+> `server.yml` 的 `changes` 作业是前置闸门：`bash scripts/server-changed.sh <base> HEAD`
+> 输出 `false` 时 `test` / `compose` 都跳过。本地想确认「这次改动到底会不会触发服务端」时，
+> 直接跑同一条命令即可（例如 `bash scripts/server-changed.sh v0.1.0 HEAD`）。
 
 macOS 本地做真实签名/公证：
 
