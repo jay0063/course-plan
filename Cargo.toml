@@ -1,6 +1,6 @@
 [package]
 name = "course-plan"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "小学课程管理计划 - 学校课程与补习课程的计划表、日程提醒、备忘与打卡"
 default-run = "course-plan"

@@ -1,6 +1,6 @@
 [package]
 name = "course-plan-server"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "CoursePlan 同步服务端（axum + SQLite）"
 publish = false
