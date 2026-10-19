@@ -283,6 +283,13 @@ impl App {
             .live_courses()
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
+        // 安排必须挂在课程上（`course_id` 是外键语义）。没有任何课程时，下拉只能是空的，
+        // 用户盯着一个点不出选项的框无从下手——直接带到「课程管理」（那里已有
+        // 「还没有课程 / 点右上角快速添加开始录入」的空状态引导），而不是打开一个死表单。
+        if courses.is_empty() {
+            self.goto(Page::Courses, cx);
+            return;
+        }
         let editor = SessionEditor::new(
             &draft,
             courses,

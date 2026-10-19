@@ -312,3 +312,7 @@ docker compose down && docker compose up -d        # 配合把 compose 里的 im
   构建可复现性弱于其他产物。
 * **无自动 changelog 分类**：Release notes 用 GitHub 自动生成，
   建议坚持 conventional commits（`feat:` / `fix:` / `chore:`）以获得可读的分组。
+* **Windows 控制台窗口已消除（v0.1.1 起）**：`src/main.rs` 对 release 构建加了
+  `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`，
+  双击 exe / 开始菜单快捷方式不再弹出黑色终端。debug 构建仍保留控制台以便看日志。
+  若日后新增 `[[bin]]`，记得给它同样的属性。

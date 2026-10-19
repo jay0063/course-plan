@@ -5,6 +5,7 @@ use gpui::component::scroll::ScrollableElement;
 use gpui::*;
 
 use super::widgets::{eid, panel};
+use gpui::TestSupportExt;
 
 /// 一个选项。
 #[derive(Clone)]
@@ -110,6 +111,7 @@ impl Render for Select {
             .border_color(if self.open { primary } else { border })
             .bg(bg)
             .cursor_pointer()
+            .test_support()
             .hover(|s| s.border_color(primary_hover))
             .child(
                 div()
@@ -189,6 +191,7 @@ impl Render for Select {
                         .py(px(6.))
                         .rounded_sm()
                         .cursor_pointer()
+                        .test_support()
                         .bg(if is_selected {
                             primary.with_alpha(0.12)
                         } else {

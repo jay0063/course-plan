@@ -351,9 +351,16 @@ pub fn render(app: &mut App, cx: &mut Context<App>) -> AnyElement {
                 None::<AnyElement>,
             ))
             .into_any_element();
+        // 根节点必须 `size_full()`：`page_enter` 是确定高度的父层，若这里用
+        // `flex_1().min_h_0()` 则高度按内容（auto）解析，`absolute().inset_0()` 的
+        // 遮罩会塌缩到近乎 0 高，对话框以这个零高盒居中 → 整个表单被推到视口上方，
+        // 「选择课程」落在 y<0，点不到也存不了。零安排是新装后的第一个状态，
+        // 因此必须保证这里的根节点撑满内容区。
         return div()
-            .flex_1()
-            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .size_full()
             .child(empty)
             .when_some(pending, |d, e| d.child(overlay(&theme, e)))
             .when_some(deleting, |d, req| {
